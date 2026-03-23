@@ -1,9 +1,7 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/debian-base:7.3.3
-FROM ${BUILD_FROM}
+FROM python:3.12-slim-bookworm
 
-# Python + Build-Tools
+# Build-Tools fuer native Extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv python3-dev \
     gcc g++ libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -12,7 +10,7 @@ WORKDIR /app
 
 # Requirements zuerst (Docker Cache)
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # App-Code kopieren (Build-Context = trading_app/)
 COPY . .

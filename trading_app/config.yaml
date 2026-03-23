@@ -1,22 +1,24 @@
 name: "Trading App"
 description: "Swing-Trading System mit Pattern-Erkennung"
-version: "1.0.0"
+version: "1.0.1"
 slug: "trading_app"
-url: "https://github.com/user/trading"
+url: "https://github.com/uk05de/trading"
 arch:
   - amd64
   - aarch64
+startup: application
 init: false
 homeassistant_api: true
 ingress: true
 ingress_port: 8501
+ingress_entry: /
 panel_icon: "mdi:chart-line"
 panel_title: "Trading"
 ports:
-  8501/tcp: null
+  8501/tcp: 8501
+  "8501/tcp": null
 map:
   - addon_config:rw
-  - share:rw
 options:
   scan_interval_minutes: 30
 schema:
