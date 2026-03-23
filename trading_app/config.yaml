@@ -1,6 +1,6 @@
 name: "Trading App"
 description: "Swing-Trading System mit Pattern-Erkennung"
-version: "1.0.1"
+version: "1.0.2"
 slug: "trading_app"
 url: "https://github.com/uk05de/trading"
 arch:
@@ -14,9 +14,9 @@ ingress_port: 8501
 ingress_entry: /
 panel_icon: "mdi:chart-line"
 panel_title: "Trading"
+host_network: true
 ports:
   8501/tcp: 8501
-  "8501/tcp": null
 map:
   - addon_config:rw
 options:
