@@ -2,7 +2,7 @@ FROM python:3.12-slim-bookworm
 
 # Build-Tools fuer native Extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libffi-dev \
+    gcc g++ libffi-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 # App-Verzeichnis
