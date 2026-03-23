@@ -1,0 +1,2481 @@
+"""
+app.py – DAX / TecDAX / MDAX Dashboard.
+
+Run with:  .venv/bin/streamlit run app.py
+"""
+
+from __future__ import annotations
+
+import json
+import datetime as dt
+import streamlit as st
+import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
+
+from scanner import run_scan, refresh_open_trades, retry_failed, run_ai_for_top_signals
+from markets import (DAX_COMPONENTS, TECDAX_COMPONENTS, MDAX_COMPONENTS,
+                     DOW_COMPONENTS, NASDAQ_COMPONENTS, INDICES)
+from db import (get_signals, get_signal_history,
+                get_prices, get_prices_with_backfill,
+                open_trade, close_trade, update_trade, delete_trade,
+                get_trades, get_trade, get_trade_stats, get_open_trade_tickers,
+                get_latest_signal_date,
+                get_free_cash, calc_position_size,
+                add_ledger_entry, get_ledger_entries, delete_ledger_entry,
+                get_cash_balance)
+from ko_calc import (stock_to_product, product_to_stock, calc_leverage,
+                      convert_targets, trade_summary)
+from ko_search import lookup_isin, calc_ideal_ko, evaluate_product, refresh_product_price, clear_price_cache
+from components import (render_chart, render_trade_actions,
+                        render_position_metrics, render_position_trades_table,
+                        render_trade_detail_caption)
+from sectors import compute_sector_scores
+from markets import get_sector, get_index
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _unit(ticker: str) -> str:
+    """Einheit für Kursanzeige: € für DE-Aktien, $ für US-Aktien, Pkt. für Indizes."""
+    if ticker.startswith("^"):
+        return "Pkt."
+    if ticker.endswith(".DE"):
+        return "€"
+    return "$"
+
+
+def _fmt(value: float, ticker: str) -> str:
+    """Kurs formatieren mit passender Einheit."""
+    return f"{value:.2f} {_unit(ticker)}"
+
+
+def _de_date(iso: str) -> str:
+    """ISO-Datum (YYYY-MM-DD) ins deutsche Format (DD.MM.YYYY) umwandeln."""
+    try:
+        return dt.date.fromisoformat(iso).strftime("%d.%m.%Y")
+    except (ValueError, TypeError):
+        return iso or "–"
+
+
+from ui_colors import color_for_r, style_trades_df as _style_trades_df
+
+
+def _group_trade_rows(rows: list[dict]) -> list[dict]:
+    """
+    Gruppiere Trade-Rows nach Ticker.
+    Einzelne Trades bleiben unverändert (_n_trades=1).
+    Mehrere Trades pro Ticker → eine Zusammenfassungszeile.
+    """
+    from collections import defaultdict
+    by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_ticker[r["Ticker"]].append(r)
+
+    grouped = []
+    for ticker, trades in by_ticker.items():
+        if len(trades) == 1:
+            trades[0]["_n_trades"] = 1
+            grouped.append(trades[0])
+        else:
+            # Sortiert nach trade_id (ältester zuerst)
+            trades.sort(key=lambda t: t["trade_id"])
+            latest = trades[-1]  # neuester Trade für Hinweis
+            total_size = sum(t.get("Stk.", 1) for t in trades)
+            total_invest = sum(t.get("Einstieg", 0) * t.get("Stk.", 1) for t in trades)
+            avg_entry = round(total_invest / total_size, 2) if total_size else 0
+            total_wert = sum(t.get("Aktuell", 0) * t.get("Stk.", 1) for t in trades)
+            # P/L korrigieren: jeder Einzel-Trade hat 1€ Verkauf eingerechnet,
+            # aber bei Gesamtposition fällt nur 1× Verkaufsgebühr an
+            _n = len(trades)
+            total_pnl_abs = sum(t.get("P/L €", 0) for t in trades) + (_n - 1)  # zu viel abgezogene Verkaufsgebühren zurück
+            total_pnl_pct = round(total_pnl_abs / total_invest * 100, 1) if total_invest > 0 else 0
+
+            summary = {
+                "trade_id": trades[0]["trade_id"],
+                "Name": trades[0]["Name"],
+                "Ticker": ticker,
+                "Richtung": trades[0]["Richtung"],
+                "Produkt": trades[0].get("Produkt", ""),
+                "Stk.": total_size,
+                "Einstieg": avg_entry,
+                "Aktuell": latest.get("Aktuell", 0),
+                "Invest": round(total_invest, 2),
+                "Wert": round(total_wert, 2),
+                "P/L %": total_pnl_pct,
+                "P/L €": round(total_pnl_abs, 2),
+                "_n_trades": len(trades),
+            }
+            # Optionale Felder nur wenn in Quelldaten vorhanden
+            _all_keys = set()
+            for t in trades:
+                _all_keys.update(t.keys())
+            # Profit R: gewichteter Durchschnitt ueber alle Einzeltrades
+            _total_r = 0.0
+            _r_count = 0
+            for _t in trades:
+                _pr = _t.get("Profit R")
+                if _pr is not None:
+                    _stk = _t.get("Stk.", 1)
+                    _total_r += _pr * _stk
+                    _r_count += _stk
+            summary["Profit R"] = round(_total_r / _r_count, 2) if _r_count > 0 else None
+
+            # Hinweis: schlimmsten nehmen (SL durchbrochen hat Prioritaet)
+            _worst_hint = ""
+            for _t in trades:
+                _h = _t.get("Hinweis", "")
+                if "SL DURCHBROCHEN" in _h:
+                    _worst_hint = _h
+                    break
+                elif _h and not _worst_hint:
+                    _worst_hint = _h
+            summary["Hinweis"] = _worst_hint
+
+            _optional = {
+                "Stop": latest, "Ziel": latest,
+                "RSI": latest, "Seit": trades[0], "Produkt Bid": latest,
+                "Tage": max(trades, key=lambda t: t.get("Tage", 0)),
+            }
+            for key, src in _optional.items():
+                if key in _all_keys:
+                    summary[key] = src.get(key)
+            grouped.append(summary)
+    return grouped
+
+
+def _build_trade_row(t: dict) -> dict:
+    """
+    Baut eine Display-Zeile für einen offenen Trade aus DB-Daten.
+    Gemeinsame Funktion für Dashboard und Meine-Trades-Tabelle.
+    """
+    ko = t.get("ko_level")
+    bv = t.get("bv") or 1.0
+    _dir = t["direction"]
+    cur_stock = t.get("current_price") or t["entry_price"]
+    entry_stock = t["entry_price"]
+    _entry_fees = t.get("entry_fees") or 1.0
+    _est_total_fees = _entry_fees + 1.0
+    _size = t.get("size") or 1
+
+    if ko:
+        _prod_bid = t.get("product_bid")
+        cur_prod = _prod_bid if _prod_bid else stock_to_product(cur_stock, ko, _dir, bv)
+        entry_prod = stock_to_product(entry_stock, ko, _dir, bv)
+        stop_stock = t.get("stop_loss")
+        tgt_stock = t.get("target")
+        stop_prod = stock_to_product(stop_stock, ko, _dir, bv) if stop_stock else None
+        tgt_prod = stock_to_product(tgt_stock, ko, _dir, bv) if tgt_stock else None
+        _invest = entry_prod * _size
+        _raw_pnl = (cur_prod - entry_prod) * _size
+        pnl_abs = _raw_pnl - _est_total_fees
+        pnl_pct = pnl_abs / _invest * 100 if _invest > 0 else 0
+    else:
+        cur_prod = cur_stock
+        entry_prod = entry_stock
+        stop_prod = t.get("stop_loss")
+        tgt_prod = t.get("target")
+        _invest = entry_prod * _size
+        _raw_pnl = (cur_prod - entry_prod) * _size if cur_prod and entry_prod else 0
+        pnl_abs = _raw_pnl - _est_total_fees
+        pnl_pct = pnl_abs / _invest * 100 if _invest > 0 else 0
+
+    # Profit in R berechnen (auf Produkt-Ebene, konsistent mit P/L)
+    # Bei KO-Zertifikaten: Profit = Aktuell - Einstieg (IMMER, egal ob LONG/SHORT)
+    # Das SHORT ist im Produktpreis eingebaut (stock_to_product)
+    _orig_sl_stock = t.get("stop_loss")
+    _profit_r = None
+    if _orig_sl_stock and entry_stock and _orig_sl_stock > 0 and entry_stock > 0:
+        if ko:
+            _sl_prod = stock_to_product(_orig_sl_stock, ko, _dir, bv)
+            _risk_prod = abs(entry_prod - _sl_prod)
+            _profit_prod = cur_prod - entry_prod
+            _profit_r = round(_profit_prod / _risk_prod, 2) if _risk_prod > 0 else None
+        else:
+            _risk = abs(entry_stock - _orig_sl_stock)
+            if _dir == "LONG":
+                _profit = cur_stock - entry_stock
+            else:
+                _profit = entry_stock - cur_stock
+            _profit_r = round(_profit / _risk, 2) if _risk > 0 else None
+
+    # Hinweis basierend auf Profit R
+    _hinweis = ""
+    if _profit_r is not None:
+        if _profit_r <= -1.0:
+            _hinweis = "⚠️ SL DURCHBROCHEN — sofort prüfen!"
+        elif _profit_r >= 2.0:
+            _hinweis = "🎯 Target erreicht — Gewinnmitnahme!"
+        elif _profit_r >= 1.5:
+            _hinweis = "✅ Nahe Target"
+
+    _row = {
+        "trade_id": t["id"],
+        "Name": t["name"],
+        "Richtung": t["direction"],
+        "Stk.": _size,
+        "Einstieg": round(entry_prod, 2),
+        "Aktuell": round(cur_prod, 2),
+        "Stop": round(stop_prod, 2) if stop_prod else None,
+        "Ziel": round(tgt_prod, 2) if tgt_prod else None,
+        "P/L %": round(pnl_pct, 1),
+        "P/L €": round(pnl_abs, 2),
+        "Profit R": _profit_r,
+        "Hinweis": _hinweis,
+        "Tage": (dt.date.today() - dt.date.fromisoformat(t["entry_date"])).days,
+        "Ticker": t["ticker"],
+    }
+    return _row
+
+
+# ---------------------------------------------------------------------------
+# Page config
+# ---------------------------------------------------------------------------
+st.set_page_config(page_title="DAX Screener", page_icon="📊", layout="wide")
+
+_title_col, _btn_refresh, _btn_ai, _btn_col = st.columns([5, 1, 1, 1])
+with _title_col:
+    st.title("Robski's Super Trader")
+with _btn_refresh:
+    st.write("")  # Spacer
+    _do_refresh = st.button("Trades aktualisieren", width="stretch")
+with _btn_ai:
+    st.write("")  # Spacer
+    _do_ai_batch = st.button("KI-Bewertung", width="stretch",
+                             help="KI-Bewertung für Top-Signale (|Score| >= 40)")
+with _btn_col:
+    st.write("")  # Spacer
+    rescan = st.button("Alles aktualisieren", type="primary", width="stretch")
+    if rescan:
+        st.cache_data.clear()
+        st.session_state["run_scan"] = True
+    _data_info_placeholder = st.empty()
+
+# ---------------------------------------------------------------------------
+# Kurse aktualisieren: Yahoo + Indikatoren + Analyse + Targets + Produkt-Bid
+# ---------------------------------------------------------------------------
+if _do_refresh:
+    clear_price_cache()
+    import scanner as _scanner_mod
+    _refresh_bar = st.progress(0, text="Trades aktualisieren ...")
+    _scanner_mod.progress_callback = lambda d, t, txt: _refresh_bar.progress(d / t, text=f"Trades: {txt}")
+    _n_updated = refresh_open_trades()
+    _scanner_mod.progress_callback = None
+    _refresh_bar.empty()
+    if _n_updated:
+        st.session_state["_refresh_msg"] = (
+            f"{_n_updated} Trade(s) aktualisiert — {dt.datetime.now().strftime('%H:%M:%S Uhr')}")
+    else:
+        st.session_state["_refresh_msg"] = "warn:Keine offenen Trades gefunden."
+    st.rerun()
+
+_refresh_msg = st.session_state.pop("_refresh_msg", None)
+if _refresh_msg:
+    if _refresh_msg.startswith("warn:"):
+        _data_info_placeholder.warning(_refresh_msg[5:])
+    else:
+        _data_info_placeholder.caption(_refresh_msg)
+
+# ---------------------------------------------------------------------------
+# KI-Bewertung für Top-Signale
+# ---------------------------------------------------------------------------
+if _do_ai_batch:
+    _sr = st.session_state.get("scan_results")
+    if _sr is not None and not _sr.empty:
+        _n_cand = (_sr["Score"].abs() >= 40).sum()
+        if _n_cand > 0:
+            _ai_progress = st.progress(0, text=f"KI-Bewertung: 0/{_n_cand} ...")
+            def _ai_cb(done, total):
+                _ai_progress.progress(done / total, text=f"KI-Bewertung: {done}/{total} ...")
+            _sr = run_ai_for_top_signals(_sr, threshold=40.0, progress_callback=_ai_cb)
+            _ai_progress.empty()
+            st.session_state["scan_results"] = _sr
+            _n_k = (_sr["Konsens"] == "\u2605\u2605\u2605").sum() if "Konsens" in _sr.columns else 0
+            _n_w = (_sr["Konsens"] == "\u26a0").sum() if "Konsens" in _sr.columns else 0
+            st.session_state["_refresh_msg"] = (
+                f"KI-Bewertung: {_n_cand} bewertet, {_n_k} Konsens, {_n_w} Widerspruch")
+        else:
+            st.session_state["_refresh_msg"] = "warn:Keine Signale mit |Score| >= 40 vorhanden."
+    else:
+        st.session_state["_refresh_msg"] = "warn:Keine Scan-Ergebnisse. Bitte zuerst Scan starten."
+    st.rerun()
+
+# ---------------------------------------------------------------------------
+# Session-state navigation
+# ---------------------------------------------------------------------------
+if "page" not in st.session_state:
+    st.session_state["page"] = "top"
+
+_nav_items = [
+    ("top", "Empfehlungen"),
+    ("trades", "Meine Trades"),
+    ("konto", "Konto"),
+    ("history", "Signal-Historie"),
+    ("wiki", "Wiki"),
+]
+_nav_cols = st.columns(len(_nav_items))
+for i, (key, label) in enumerate(_nav_items):
+    _type = "primary" if st.session_state["page"] == key else "secondary"
+    if _nav_cols[i].button(label, type=_type, use_container_width=True, key=f"nav_{key}"):
+        st.session_state["page"] = key
+        st.rerun()
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Style helpers (module level)
+# ---------------------------------------------------------------------------
+
+def _color_pnl(val):
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "color: #00e676"
+        elif val < 0:
+            return "color: #ff1744"
+    return ""
+
+def _color_delta(val):
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "background-color: rgba(0,200,83,0.15); color: #00e676"
+        elif val < 0:
+            return "background-color: rgba(255,23,68,0.15); color: #ff1744"
+    return "color: #666"
+
+def _color_direction(val):
+    if val == "LONG":
+        return "background-color: rgba(0,200,83,0.2); color: #00e676; font-weight: bold"
+    elif val == "SHORT":
+        return "background-color: rgba(255,23,68,0.2); color: #ff1744; font-weight: bold"
+    return ""
+
+def _style_direction(val):
+    if val == "LONG":
+        return "background-color: rgba(0,200,83,0.2); color: #00e676; font-weight: bold"
+    elif val == "SHORT":
+        return "background-color: rgba(255,23,68,0.2); color: #ff1744; font-weight: bold"
+    return "color: #9e9e9e"
+
+def _style_score(val):
+    if isinstance(val, (int, float)):
+        if val > 30:
+            return "color: #00e676; font-weight: bold"
+        elif val < -30:
+            return "color: #ff1744; font-weight: bold"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Dialog: Trade Details
+# ---------------------------------------------------------------------------
+@st.dialog("Trade Details", width="large")
+def show_trade_dialog(trade_id: int):
+    trade = get_trade(trade_id)
+    if not trade:
+        st.error("Trade nicht gefunden.")
+        return
+    _dir_emoji = "🟢" if trade["direction"] == "LONG" else "🔴"
+    _is_closed = trade.get("status") == "CLOSED"
+
+    _id_str = trade.get("isin") or trade.get("wkn") or ""
+    _title_suffix = f" - {_id_str}" if _id_str else ""
+    _title_c, _spacer_c, _toggle_c = st.columns([4, 2, 1])
+    with _title_c:
+        st.markdown(f"### {_dir_emoji} {trade['direction']}: {trade['name']} ({trade['ticker']}){_title_suffix}")
+    with _toggle_c:
+        _is_excluded = bool(trade.get("is_test", 0))
+        _new_excluded = st.toggle(
+            "Test Trade",
+            value=_is_excluded,
+            key=f"dlg_exclude_{trade['id']}",
+            help="Test-Trade (vom Learning ausschließen)",
+        )
+        if _new_excluded != _is_excluded:
+            update_trade(trade["id"], {"is_test": int(_new_excluded)})
+            st.rerun()
+
+    # --- Einheitliches Layout: Metrics → Chart → Tabelle → Aktionen ---
+    render_position_metrics([trade], kp="dlg_")
+    render_chart(trade["ticker"], trade["name"], trades=[trade], kp="dlg_")
+
+    st.markdown("#### Trade Details")
+    render_position_trades_table([trade], kp="dlg_")
+    render_trade_detail_caption([trade])
+
+    # --- KI-Bewertung ---
+    _trade_ticker = trade["ticker"]
+    st.divider()
+    st.markdown("#### KI-Bewertung")
+
+    from db import get_ai_assessments, save_ai_assessment
+    from ai_opinion import get_ai_opinion, PROMPT_TEMPLATE
+
+    _t_ai_hist = get_ai_assessments(_trade_ticker, limit=2)
+    _t_ai_cur = _t_ai_hist[0] if _t_ai_hist else None
+
+    if _t_ai_cur:
+        _t_ai_prev = _t_ai_hist[1] if len(_t_ai_hist) > 1 else None
+
+        if _t_ai_prev:
+            st.markdown("##### Vorherige → Aktuelle Bewertung")
+            _ta1, _ta2 = st.columns(2)
+            for _col, _data, _label in [(_ta1, _t_ai_prev, "Vorherige"), (_ta2, _t_ai_cur, "Aktuelle")]:
+                with _col:
+                    st.markdown(f"**{_label}**")
+                    st.caption(_data.get("created_at", ""))
+                    _d = _data["direction"]
+                    _e = "🟢" if _d == "LONG" else "🔴"
+                    st.metric("Richtung", f"{_e} {_d}")
+                    st.metric("Score", f"{_data.get('score', 0):+.1f}")
+                    st.metric("Ziel", _fmt(_data.get("target"), _trade_ticker))
+                    st.metric("Stop-Loss", _fmt(_data.get("stop_loss"), _trade_ticker))
+            if _t_ai_prev["direction"] != _t_ai_cur["direction"]:
+                st.warning(f"Richtungswechsel: {_t_ai_prev['direction']} -> {_t_ai_cur['direction']}")
+        else:
+            _d = _t_ai_cur["direction"]
+            _e = "🟢" if _d == "LONG" else "🔴"
+            _tm1, _tm2, _tm3, _tm4 = st.columns(4)
+            _tm1.metric("Richtung", f"{_e} {_d}")
+            _tm2.metric("Score", f"{_t_ai_cur.get('score', 0):+.1f}")
+            _tm3.metric("Ziel", _fmt(_t_ai_cur.get("target"), _trade_ticker))
+            _tm4.metric("Stop-Loss", _fmt(_t_ai_cur.get("stop_loss"), _trade_ticker))
+
+        st.markdown("**Begründung:**")
+        st.text_area("Begründung", _t_ai_cur.get("reasoning", "–"), height=200, disabled=True, key=f"ai_reason_trade_{trade['id']}", label_visibility="collapsed")
+        with st.expander("Verwendeter Prompt"):
+            st.code(_t_ai_cur.get("prompt", PROMPT_TEMPLATE), language="text")
+    else:
+        st.info("Noch keine KI-Bewertung vorhanden.")
+
+    if st.button("KI-Analyse starten", type="primary", key=f"ai_trade_{trade['id']}"):
+        with st.spinner("Claude analysiert ..."):
+            from indicators import compute_all
+            from fundamentals import get_fundamentals
+            from news_sentiment import get_news_sentiment
+            from markets import get_sector, get_index, SECTOR_MAP
+            from sectors import compute_sector_scores
+
+            from scanner import _download
+            _t_raw = _download(_trade_ticker)
+
+            if _t_raw is not None and len(_t_raw) > 30:
+                _t_df = compute_all(_t_raw)
+                _t_df.dropna(subset=["RSI", "ATR", "EMA50"], inplace=True)
+                _t_fund = get_fundamentals(_trade_ticker)
+                _t_ns, _t_nc, _ = get_news_sentiment(_trade_ticker)
+                _t_sec = get_sector(_trade_ticker)
+                _t_idx = get_index(_trade_ticker)
+                _t_sec_score = 0.0
+                _s = SECTOR_MAP.get(_trade_ticker)
+                if _s and not _s.startswith("Index:"):
+                    _ss = compute_sector_scores()
+                    _t_sec_score = _ss.get(_s, {}).get("score", 0.0)
+
+                _t_tech = {"direction": trade["direction"], "score": 0}
+                _t_result = get_ai_opinion(
+                    _trade_ticker, trade["name"], _t_df, _t_fund,
+                    _t_ns, _t_nc, _t_sec, _t_sec_score, _t_idx, _t_tech,
+                )
+                if _t_result.get("error"):
+                    st.error(f"Fehler: {_t_result['error']}")
+                else:
+                    save_ai_assessment({
+                        "date": dt.date.today().isoformat(),
+                        "ticker": _trade_ticker,
+                        "direction": _t_result["direction"],
+                        "score": _t_result["score"],
+                        "entry": _t_result["entry"],
+                        "target": _t_result["target"],
+                        "stop_loss": _t_result["stop_loss"],
+                        "risk_reward": _t_result["risk_reward"],
+                        "reasoning": _t_result["reasoning"],
+                        "prompt": _t_result["prompt"],
+                        "model": _t_result["model"],
+                    })
+                    st.rerun()
+            else:
+                st.error("Kursdaten konnten nicht geladen werden.")
+
+    st.divider()
+    if _is_closed:
+        _ct_edit, _ct_del = st.tabs(["Trade bearbeiten", "Trade löschen"])
+
+        with _ct_edit:
+            with st.form(f"dlg_edit_closed_{trade['id']}"):
+                ce1, ce2 = st.columns(2)
+                with ce1:
+                    ce_entry_date = st.date_input(
+                        "Einstiegsdatum",
+                        value=dt.date.fromisoformat(trade["entry_date"]),
+                        key=f"dlg_ce_edate_{trade['id']}",
+                    )
+                    ce_entry_price = st.number_input(
+                        "Einstiegskurs (€)",
+                        value=max(float(trade["entry_price"] or 0.01), 0.01),
+                        min_value=0.01, step=0.01, format="%.2f",
+                        key=f"dlg_ce_eprice_{trade['id']}",
+                    )
+                    ce_exit_date = st.date_input(
+                        "Ausstiegsdatum",
+                        value=dt.date.fromisoformat(trade["exit_date"]) if trade.get("exit_date") else dt.date.today(),
+                        key=f"dlg_ce_xdate_{trade['id']}",
+                    )
+                    ce_exit_price = st.number_input(
+                        "Ausstiegskurs (€)",
+                        value=float(trade.get("exit_price") or 0),
+                        min_value=0.0, step=0.01, format="%.2f",
+                        key=f"dlg_ce_xprice_{trade['id']}",
+                    )
+                with ce2:
+                    ce_size = st.number_input(
+                        "Stückzahl", value=float(trade["size"] or 1),
+                        min_value=0.01, step=1.0, format="%.2f",
+                        key=f"dlg_ce_size_{trade['id']}",
+                    )
+                    ce_fees = st.number_input(
+                        "Gebühren (€)", value=float(trade.get("fees") or 0),
+                        min_value=0.0, step=0.01, format="%.2f",
+                        key=f"dlg_ce_fees_{trade['id']}",
+                    )
+                    ce_wkn = st.text_input(
+                        "WKN", value=trade.get("wkn") or "",
+                        key=f"dlg_ce_wkn_{trade['id']}",
+                    )
+                    ce_ko = st.number_input(
+                        "KO-Schwelle (€)", value=float(trade.get("ko_level") or 0),
+                        min_value=0.0, step=0.01, format="%.2f",
+                        key=f"dlg_ce_ko_{trade['id']}",
+                    )
+                    ce_bv = st.number_input(
+                        "BV", value=float(trade.get("bv") or 0.1),
+                        min_value=0.001, step=0.01, format="%.3f",
+                        key=f"dlg_ce_bv_{trade['id']}",
+                    )
+                ce_notes = st.text_input(
+                    "Notizen", value=trade.get("notes") or "",
+                    key=f"dlg_ce_notes_{trade['id']}",
+                )
+
+                if st.form_submit_button("Speichern", type="primary", width="stretch"):
+                    _ce_dir = trade["direction"]
+                    if ce_entry_price > 0 and ce_exit_price > 0:
+                        if _ce_dir == "LONG":
+                            _ce_ret_pct = (ce_exit_price - ce_entry_price) / ce_entry_price * 100
+                            _ce_ret_abs = (ce_exit_price - ce_entry_price) * ce_size - ce_fees
+                        else:
+                            _ce_ret_pct = (ce_entry_price - ce_exit_price) / ce_entry_price * 100
+                            _ce_ret_abs = (ce_entry_price - ce_exit_price) * ce_size - ce_fees
+                    else:
+                        _ce_ret_pct = 0
+                        _ce_ret_abs = 0
+                    update_trade(trade["id"], {
+                        "entry_date": ce_entry_date.isoformat(),
+                        "entry_price": ce_entry_price,
+                        "exit_date": ce_exit_date.isoformat(),
+                        "exit_price": ce_exit_price,
+                        "size": ce_size,
+                        "fees": ce_fees,
+                        "notes": ce_notes or None,
+                        "wkn": ce_wkn or None,
+                        "ko_level": ce_ko if ce_ko > 0 else None,
+                        "bv": ce_bv if ce_ko > 0 else 1.0,
+                        "return_pct": round(_ce_ret_pct, 2),
+                        "return_abs": round(_ce_ret_abs, 2),
+                    })
+                    st.success(f"Trade #{trade['id']} aktualisiert.")
+                    st.rerun()
+
+        with _ct_del:
+            st.warning(f"Trade #{trade['id']} **{trade['name']}** unwiderruflich löschen?")
+            _cd_confirm = st.checkbox("Ja, ich bin sicher", key=f"dlg_cd_confirm_{trade['id']}")
+            if st.button("Trade löschen", type="primary",
+                         disabled=not _cd_confirm,
+                         key=f"dlg_cd_btn_{trade['id']}"):
+                delete_trade(trade["id"])
+                st.success(f"Trade #{trade['id']} gelöscht.")
+                st.rerun()
+    else:
+        render_trade_actions(trade, kp="dlg_")
+
+
+# ---------------------------------------------------------------------------
+# Dialog: Positions-Ansicht (gruppiert nach Ticker)
+# ---------------------------------------------------------------------------
+@st.dialog("Position Details", width="large")
+def show_position_dialog(ticker: str):
+    from db import get_open_trades_for_ticker
+    trades = get_open_trades_for_ticker(ticker)
+    if not trades:
+        st.error("Keine offenen Trades für diesen Ticker.")
+        return
+
+    first = trades[0]
+    _dir_emoji = "🟢" if first["direction"] == "LONG" else "🔴"
+    _id_str = first.get("isin") or first.get("wkn") or ""
+    _title_suffix = f" - {_id_str}" if _id_str else ""
+    _title_c, _spacer_c, _toggle_c = st.columns([4, 2, 1])
+    with _title_c:
+        st.markdown(f"### {_dir_emoji} {first['direction']}: {first['name']} ({ticker}){_title_suffix}")
+        st.caption(f"{len(trades)} Trades · Position gesamt")
+    with _toggle_c:
+        _is_excluded = all(bool(t.get("is_test", 0)) for t in trades)
+        _new_excluded = st.toggle(
+            "Test Trade",
+            value=_is_excluded,
+            key="pos_dlg_exclude",
+            help="Test-Trade (alle Trades dieser Position vom Learning ausschließen)",
+        )
+        if _new_excluded != _is_excluded:
+            for t in trades:
+                update_trade(t["id"], {"is_test": int(_new_excluded)})
+            st.rerun()
+
+    render_position_metrics(trades, kp="pos_dlg_")
+    render_chart(first["ticker"], first["name"], trades=trades, kp="pos_dlg_")
+
+    st.markdown("#### Einzelne Trades")
+    render_position_trades_table(trades, kp="pos_dlg_")
+    render_trade_detail_caption(trades)
+
+    # Aktionen (FIFO für Close, Auswahl für Edit/Delete)
+    st.divider()
+    render_trade_actions(trades[0], kp="pos_dlg_", all_trades=trades)
+
+
+# ---------------------------------------------------------------------------
+# Dialog: Signal Details
+# ---------------------------------------------------------------------------
+@st.dialog("Signal Details", width="large")
+def show_signal_dialog(ticker: str):
+    # Load latest signal for this ticker from DB (by date desc)
+    _hist = get_signal_history(ticker, limit=1)
+    selected_row = _hist[0] if _hist else None
+    if not selected_row:
+        st.error(f"Signal für {ticker} nicht gefunden.")
+        return
+
+    # Map to display column names
+    _col_map = {
+        "ticker": "Ticker", "name": "Name", "direction": "Richtung",
+        "score": "Score", "entry": "Entry", "pattern": "Pattern",
+        "target": "Ziel", "stop_loss": "Stop-Loss",
+        "risk_reward": "R/R",
+        "detail": "Detail",
+        "rsi": "RSI", "adx": "ADX", "atr_pct": "ATR%",
+        "analyst_rating": "Analyst", "analyst_target": "Kursziel",
+    }
+    sr = {}
+    for k, v in selected_row.items():
+        sr[_col_map.get(k, k)] = v
+
+    name = sr["Name"]
+    direction = sr["Richtung"]
+    dir_color = {"LONG": "green", "SHORT": "red"}.get(direction, "gray")
+    base_sig = selected_row
+
+    # Check for active trade on this ticker
+    _open_trades_map = get_open_trade_tickers()
+    _active_trades_list = _open_trades_map.get(ticker, [])
+    _active_trade = _active_trades_list[0] if _active_trades_list else None
+
+    # ── Header (always visible) ──
+    _pattern_name = sr.get("Pattern", "") or ""
+
+    st.markdown(f"### {name} ({ticker})")
+    _hc1, _hc2, _hc3, _hc4, _hc5, _hc6 = st.columns(6)
+    _hc1.metric("Richtung", direction)
+    _hc2.metric("Pattern", _pattern_name or "–")
+    _hc3.metric("Score", f"{sr['Score']:.1f}")
+    _hc4.metric("Einstieg", _fmt(sr['Entry'], ticker))
+    _hc5.metric("Ziel", _fmt(sr['Ziel'], ticker) if pd.notna(sr.get('Ziel')) else "–")
+    _hc6.metric("Stop-Loss", _fmt(sr['Stop-Loss'], ticker) if pd.notna(sr.get('Stop-Loss')) else "–")
+
+    if _active_trade:
+        _ko = _active_trade.get("ko_level")
+        _bv = _active_trade.get("bv") or 1.0
+        _prod_id = _active_trade.get("isin") or _active_trade.get("wkn") or ""
+        _trade_dir = _active_trade["direction"]
+        if _ko:
+            _entry_p = stock_to_product(_active_trade['entry_price'], _ko, _trade_dir, _bv)
+            _info = f"Aktiver Trade: {_trade_dir} seit {_de_date(_active_trade['entry_date'])} · Einstieg: {_entry_p:.2f} €"  # KO-Produkt immer in €
+            if _prod_id:
+                _info += f" · {_prod_id}"
+        else:
+            _info = (f"Aktiver Trade: {_trade_dir} seit {_de_date(_active_trade['entry_date'])} · "
+                     f"Einstieg: {_fmt(_active_trade['entry_price'], ticker)}")
+        st.success(_info)
+
+    # ── Tabs ──
+    _tab_names = ["Kurschart", "Score-Details", "Termine & News", "KI-Bewertung"]
+    if not _active_trade:
+        _tab_names.append("Trade eröffnen")
+
+    _tabs = st.tabs(_tab_names)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 1: Kurschart mit Handelsmarken
+    # ══════════════════════════════════════════════════════════════════════
+    with _tabs[0]:
+        _sig_data = {
+            "price": sr["Entry"],
+            "target": sr.get("Ziel"),
+            "stop_loss": sr.get("Stop-Loss"),
+            "analyst_target": sr.get("Kursziel"),
+            "date": selected_row.get("date", dt.date.today().isoformat()),
+            "direction": direction,
+        }
+        _overlay_trades = _active_trades_list if _active_trades_list else None
+        render_chart(ticker, name, signal=_sig_data, trades=_overlay_trades)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 2: Score-Aufschlüsselung
+    # ══════════════════════════════════════════════════════════════════════
+    with _tabs[1]:
+        # Detail-Text anzeigen (aus Scanner)
+        _detail_text = sr.get("Detail", "")
+        if _detail_text:
+            st.markdown("#### Signal-Details")
+            st.text(_detail_text)
+
+        # Technische Kennzahlen
+        st.markdown("#### Technische Kennzahlen")
+        ki1, ki2, ki3, ki4 = st.columns(4)
+        ki1.metric("RSI", f"{sr['RSI']:.1f}" if pd.notna(sr.get('RSI')) else "–")
+        ki2.metric("ADX", f"{sr['ADX']:.1f}" if pd.notna(sr.get('ADX')) else "–")
+        ki3.metric("ATR%", f"{sr['ATR%']:.2f}%" if pd.notna(sr.get('ATR%')) else "–")
+        ki4.metric("Analyst-Rating", sr.get("Analyst") or "–")
+
+        if pd.notna(sr.get("Kursziel")):
+            upside = (sr["Kursziel"] / sr["Entry"] - 1) * 100
+            st.caption(f"Analysten-Kursziel: {_fmt(sr['Kursziel'], ticker)} ({upside:+.1f}%)")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 3: Termine & News
+    # ══════════════════════════════════════════════════════════════════════
+    with _tabs[2]:
+        col_events, col_news = st.columns([1, 2])
+
+        with col_events:
+            st.markdown("#### Anstehende Termine")
+            from fundamentals import get_upcoming_events
+            events = get_upcoming_events(ticker)
+            if events:
+                for ev in events:
+                    days_away = (dt.date.fromisoformat(ev["date"]) - dt.date.today()).days
+                    if days_away < 0:
+                        continue
+                    urgency = "🔴" if days_away <= 7 else "🟡" if days_away <= 21 else "⚪"
+                    detail = f" – {ev['detail']}" if ev.get("detail") else ""
+                    st.markdown(
+                        f"{urgency} **{ev['type']}**: {ev['date']} "
+                        f"(in {days_away} Tagen){detail}"
+                    )
+            else:
+                st.caption("Keine anstehenden Termine bekannt.")
+
+        with col_news:
+            st.markdown("#### Aktuelle Nachrichten")
+            from news_sentiment import get_news_sentiment as _get_news
+            _ns_score, _ns_count, _ns_articles = _get_news(ticker)
+
+            if _ns_score > 0.5:
+                st.success(f"Nachrichten-Stimmung: **positiv** ({_ns_score:+.1f})")
+            elif _ns_score < -0.5:
+                st.error(f"Nachrichten-Stimmung: **negativ** ({_ns_score:+.1f})")
+            else:
+                st.info(f"Nachrichten-Stimmung: **neutral** ({_ns_score:+.1f})")
+
+            if _ns_articles:
+                for art in _ns_articles[:8]:
+                    s_emoji = {"positiv": "🟢", "negativ": "🔴", "neutral": "⚪"}.get(art["sentiment"], "⚪")
+                    title = art["title"]
+                    pub = art.get("publisher", "")
+                    date = art.get("date", "")
+                    link = art.get("link", "")
+                    header = f"{s_emoji} [{title}]({link})" if link else f"{s_emoji} **{title}**"
+                    meta = " · ".join(filter(None, [pub, date]))
+                    st.markdown(header)
+                    if meta:
+                        st.caption(meta)
+            else:
+                st.caption("Keine aktuellen Nachrichten gefunden.")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 4: KI-Bewertung
+    # ══════════════════════════════════════════════════════════════════════
+    with _tabs[3]:
+        from ai_opinion import get_ai_opinion, PROMPT_TEMPLATE
+        from db import get_ai_assessments, save_ai_assessment
+
+        _ai_history = get_ai_assessments(ticker, limit=2)
+        _ai_current = _ai_history[0] if _ai_history else None
+
+        if _ai_current:
+            _ai_prev = _ai_history[1] if len(_ai_history) > 1 else None
+
+            if _ai_prev:
+                # Alt vs. Neu Vergleich
+                st.markdown("##### Vergleich: Vorherige → Aktuelle Bewertung")
+                _ka1, _ka2 = st.columns(2)
+                with _ka1:
+                    st.markdown("**Vorherige Bewertung**")
+                    st.caption(_ai_prev.get("created_at", ""))
+                    _prev_dir = _ai_prev["direction"]
+                    _pc = "🟢" if _prev_dir == "LONG" else "🔴"
+                    st.metric("Richtung", f"{_pc} {_prev_dir}")
+                    _prev_score = _ai_prev.get('score', 0) or 0
+                    st.metric("Score", f"{_prev_score:+.1f}")
+                    st.metric("Einstieg", _fmt(_ai_prev.get("entry"), ticker))
+                    st.metric("Ziel", _fmt(_ai_prev.get("target"), ticker))
+                    st.metric("Stop-Loss", _fmt(_ai_prev.get("stop_loss"), ticker))
+                    rr = _ai_prev.get("risk_reward")
+                    st.metric("R/R", f"{rr:.1f}" if rr else "–")
+                with _ka2:
+                    st.markdown("**Aktuelle Bewertung**")
+                    st.caption(_ai_current.get("created_at", ""))
+                    _cur_dir = _ai_current["direction"]
+                    _cc = "🟢" if _cur_dir == "LONG" else "🔴"
+                    st.metric("Richtung", f"{_cc} {_cur_dir}")
+                    _cur_score = _ai_current.get('score', 0) or 0
+                    st.metric("Score", f"{_cur_score:+.1f}")
+                    st.metric("Einstieg", _fmt(_ai_current.get("entry"), ticker))
+                    st.metric("Ziel", _fmt(_ai_current.get("target"), ticker))
+                    st.metric("Stop-Loss", _fmt(_ai_current.get("stop_loss"), ticker))
+                    rr = _ai_current.get("risk_reward")
+                    st.metric("R/R", f"{rr:.1f}" if rr else "–")
+
+                # Richtungswechsel hervorheben
+                if _ai_prev["direction"] != _ai_current["direction"]:
+                    st.warning(f"⚠️ Richtungswechsel: {_ai_prev['direction']} → {_ai_current['direction']}")
+
+                st.divider()
+            else:
+                # Nur aktuelle Bewertung
+                st.markdown("##### KI-Bewertung")
+                st.caption(_ai_current.get("created_at", ""))
+                _kc1, _kc2, _kc3, _kc4, _kc5 = st.columns(5)
+                _cur_dir = _ai_current["direction"]
+                _cur_score = _ai_current.get('score', 0) or 0
+                _kc1.metric("Richtung", _cur_dir)
+                _kc2.metric("Score", f"{_cur_score:+.1f}")
+                _kc3.metric("Einstieg", _fmt(_ai_current.get("entry"), ticker))
+                _kc4.metric("Ziel", _fmt(_ai_current.get("target"), ticker))
+                _kc5.metric("Stop-Loss", _fmt(_ai_current.get("stop_loss"), ticker))
+                st.divider()
+
+            # Begründung
+            st.markdown("**Begründung:**")
+            st.text_area("Begründung", _ai_current.get("reasoning", "–"), height=200, disabled=True, key="ai_reason_signal", label_visibility="collapsed")
+
+            # Prompt anzeigen (einklappbar)
+            with st.expander("Verwendeter Prompt"):
+                st.code(_ai_current.get("prompt", PROMPT_TEMPLATE), language="text")
+
+        else:
+            st.info("Noch keine KI-Bewertung vorhanden.")
+
+        # Button für neue Bewertung
+        if st.button("KI-Analyse starten", type="primary", key="ai_assess_btn"):
+            with st.spinner("Claude analysiert …"):
+                # Daten laden
+                from indicators import compute_all
+                from fundamentals import get_fundamentals
+                from news_sentiment import get_news_sentiment
+                from market_context import get_market_context, for_ticker
+                from markets import get_sector, get_index, SECTOR_MAP
+                from sectors import compute_sector_scores
+                from db import save_prices
+
+                from scanner import _download
+                _ai_raw = _download(ticker)
+
+                if _ai_raw is not None and len(_ai_raw) > 30:
+                    _ai_df = compute_all(_ai_raw)
+                    _ai_df.dropna(subset=["RSI", "ATR", "EMA50"], inplace=True)
+                    _ai_fund = get_fundamentals(ticker)
+                    _ai_ns, _ai_nc, _ = get_news_sentiment(ticker)
+                    _ai_sector = get_sector(ticker)
+                    _ai_index = get_index(ticker)
+                    _ai_sec_score = 0.0
+                    _sec = SECTOR_MAP.get(ticker)
+                    if _sec and not _sec.startswith("Index:"):
+                        _ss = compute_sector_scores()
+                        _ai_sec_score = _ss.get(_sec, {}).get("score", 0.0)
+
+                    _ai_tech = {
+                        "direction": sr.get("Richtung", "–"),
+                        "score": sr.get("Score", 0),
+                    }
+
+                    _ai_result = get_ai_opinion(
+                        ticker, name, _ai_df, _ai_fund,
+                        _ai_ns, _ai_nc, _ai_sector, _ai_sec_score,
+                        _ai_index, _ai_tech,
+                    )
+
+                    if _ai_result.get("error"):
+                        st.error(f"Fehler: {_ai_result['error']}")
+                    else:
+                        save_ai_assessment({
+                            "date": dt.date.today().isoformat(),
+                            "ticker": ticker,
+                            "direction": _ai_result["direction"],
+                            "score": _ai_result["score"],
+                            "entry": _ai_result["entry"],
+                            "target": _ai_result["target"],
+                            "stop_loss": _ai_result["stop_loss"],
+                            "risk_reward": _ai_result["risk_reward"],
+                            "reasoning": _ai_result["reasoning"],
+                            "prompt": _ai_result["prompt"],
+                            "model": _ai_result["model"],
+                        })
+                        st.rerun()
+                else:
+                    st.error("Kursdaten konnten nicht geladen werden.")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TAB 5: Trade eröffnen (kein aktiver Trade)
+    # ══════════════════════════════════════════════════════════════════════
+    if not _active_trade:
+        with _tabs[4]:
+            # Datenquelle wählen: Konsens (default) / Technisch / KI
+            _ai_for_trade = get_ai_assessments(ticker, limit=1)
+            _has_ai = bool(_ai_for_trade)
+            if _has_ai:
+                _source_options = ["Konsens", "Technisch", "KI"]
+                _default_idx = 0
+            else:
+                _source_options = ["Technisch"]
+                _default_idx = 0
+            _trade_source = st.radio(
+                "Datenquelle", _source_options, index=_default_idx,
+                horizontal=True, key="dlg_sig_source",
+                help="Konsens = Tech-Stop + konservatives Ziel (ideal für KO), "
+                     "Technisch = System-Empfehlung, KI = Claude-Bewertung",
+            )
+
+            # Technisch-Werte als Basis
+            _tech_sl = base_sig.get("stop_loss")
+            _tech_tgt = base_sig.get("target")
+            _tech_price = base_sig["entry"]
+            _tech_dir = base_sig["direction"]
+            _tech_rr = base_sig.get("risk_reward")
+
+            if _trade_source == "KI" and _has_ai:
+                _ai_d = _ai_for_trade[0]
+                _sig_sl_form = _ai_d.get("stop_loss")
+                _sig_tgt_form = _ai_d.get("target")
+                _sig_price_form = _ai_d.get("entry") or _tech_price
+                _sig_dir_form = _ai_d["direction"]
+                _sig_rr_form = _ai_d.get("risk_reward")
+            elif _trade_source == "Konsens" and _has_ai:
+                _ai_d = _ai_for_trade[0]
+                # Stop = Technisch (ATR-basiert, sicherer für KO)
+                _sig_sl_form = _tech_sl
+                # Ziel = konservativ (näher am Kurs)
+                _ai_tgt = _ai_d.get("target")
+                if _tech_tgt and _ai_tgt:
+                    if _tech_dir == "LONG":
+                        _sig_tgt_form = min(_tech_tgt, _ai_tgt)
+                    else:
+                        _sig_tgt_form = max(_tech_tgt, _ai_tgt)
+                else:
+                    _sig_tgt_form = _tech_tgt
+                _sig_price_form = _tech_price
+                _sig_dir_form = _tech_dir
+                # R/R aus Konsens-Werten berechnen (ohne Erzwingung)
+                _k_risk = abs(_tech_price - _sig_sl_form) if _sig_sl_form else 0
+                _k_reward = abs(_sig_tgt_form - _tech_price) if _sig_tgt_form else 0
+                _sig_rr_form = round(_k_reward / _k_risk, 2) if _k_risk > 0 else 0
+            else:
+                _sig_sl_form = _tech_sl
+                _sig_tgt_form = _tech_tgt
+                _sig_price_form = _tech_price
+                _sig_dir_form = _tech_dir
+                _sig_rr_form = _tech_rr
+
+            if not _has_ai:
+                st.caption("Erstelle eine KI-Bewertung im Tab 'KI-Bewertung', um sie hier als Datenquelle nutzen zu können.")
+            if _sig_rr_form and _sig_rr_form < 0.9:
+                st.warning(
+                    f"R/R = {_sig_rr_form:.2f} – unter 0.9. "
+                    "Backtest zeigt: Trades unter R/R 0.9 sind im Schnitt unprofitabel."
+                )
+
+            # KO-Empfehlung
+            _max_loss_form = 30
+            if _sig_sl_form and _sig_tgt_form:
+                st.markdown("#### KO-Produkt Empfehlung")
+                _max_loss_form = st.slider(
+                    "Max. Verlust bei Stop-Loss (%)", 10, 60, 30, 5,
+                    key="dlg_sig_trade_max_loss",
+                    help="Wie viel % willst du maximal verlieren, wenn der SL auf Basiswert-Ebene greift?",
+                )
+                _ideal_form = calc_ideal_ko(_sig_price_form, _sig_sl_form, _sig_dir_form,
+                                            max_loss_pct=_max_loss_form / 100)
+
+                if "error" not in _ideal_form:
+                    ik1, ik2, ik3, ik4 = st.columns(4)
+                    ik1.metric("Ideales KO", _fmt(_ideal_form['ko_ideal'], ticker))
+                    ik2.metric("Hebel", f"{_ideal_form['leverage']:.1f}×")
+                    ik3.metric("Risiko (Basiswert)", f"{_ideal_form['risk_stock_pct']:.1f}%")
+                    ik4.metric("KO-Bereich",
+                               f"{_ideal_form['ko_range_min']:.2f} – {_ideal_form['ko_range_max']:.2f} {_unit(ticker)}")
+
+            # ISIN Lookup
+            st.divider()
+            st.markdown("**ISIN des Produkts eingeben:**")
+            _isin_col1, _isin_col2 = st.columns([2, 1])
+            with _isin_col1:
+                trade_isin_input = st.text_input(
+                    "ISIN", placeholder="z.B. DE000TB2BE38",
+                    key="dlg_sig_trade_isin_lookup",
+                )
+            with _isin_col2:
+                st.write("")
+                _do_lookup = st.button("Produkt laden", key="dlg_sig_btn_isin_lookup")
+
+            # Formular-Defaults einmalig initialisieren
+            if "dlg_sig_tf_dir" not in st.session_state:
+                st.session_state["dlg_sig_tf_dir"] = base_sig["direction"]
+                st.session_state["dlg_sig_tf_kk"] = 0.0
+                st.session_state["dlg_sig_tf_tgt"] = float(base_sig["target"]) if base_sig.get("target") else 0.0
+                st.session_state["dlg_sig_tf_stp"] = float(base_sig["stop_loss"]) if base_sig.get("stop_loss") else 0.0
+                st.session_state["dlg_sig_tf_wkn"] = ""
+                st.session_state["dlg_sig_tf_ko"] = 0.0
+                st.session_state["dlg_sig_tf_bv"] = 0.1
+                st.session_state["dlg_sig_tf_emit"] = ""
+
+            if _do_lookup and trade_isin_input and len(trade_isin_input) >= 12:
+                with st.spinner("Lade Produktdaten…"):
+                    _prod_data = lookup_isin(trade_isin_input)
+                if _prod_data:
+                    st.session_state["dlg_sig_trade_product"] = _prod_data
+                    # Formular-Felder aus Produktdaten überschreiben
+                    st.session_state["dlg_sig_tf_dir"] = _prod_data["direction"]
+                    st.session_state["dlg_sig_tf_kk"] = float(_prod_data["bid"]) if _prod_data.get("bid") else 0.0
+                    st.session_state["dlg_sig_tf_wkn"] = _prod_data.get("wkn") or ""
+                    st.session_state["dlg_sig_tf_ko"] = float(_prod_data["ko_level"]) if _prod_data.get("ko_level") else 0.0
+                    st.session_state["dlg_sig_tf_bv"] = float(_prod_data["bv"]) if _prod_data.get("bv") else 0.1
+                    st.session_state["dlg_sig_tf_emit"] = _prod_data.get("emittent") or ""
+                else:
+                    st.error("Produkt nicht gefunden. Bitte ISIN prüfen.")
+                    st.session_state.pop("dlg_sig_trade_product", None)
+            elif _do_lookup:
+                st.warning("Bitte eine vollständige ISIN eingeben (12 Zeichen).")
+
+            _loaded_product = st.session_state.get("dlg_sig_trade_product")
+
+            if _loaded_product:
+                _p = _loaded_product
+                _dir_match = _p["direction"] == _sig_dir_form
+                _dir_icon = "✅" if _dir_match else "❌"
+                _prod_info = (
+                    f"**{_p['name']}** · {_p['emittent']} · WKN: {_p['wkn']} · "
+                    f"{_dir_icon} {_p['direction']} · "
+                    f"KO: {_p['ko_level']:.2f} · BV: {_p['bv']} · "
+                    f"{'Open End' if _p['open_end'] else 'Laufzeit begrenzt'}"
+                )
+                if _p.get("bid"):
+                    _prod_info += f" · Bid: {_p['bid']:.2f} €"
+                st.markdown(_prod_info)
+
+                if not _dir_match:
+                    st.error(f"⚠ Richtung passt nicht! Signal: {_sig_dir_form}, Produkt: {_p['direction']}")
+
+                if _p.get("ko_level") and _sig_sl_form and _sig_tgt_form:
+                    _eval = evaluate_product(
+                        _p["ko_level"], _p["bv"],
+                        _sig_price_form, _sig_sl_form, _sig_tgt_form,
+                        _sig_dir_form, max_loss_pct=_max_loss_form / 100,
+                    )
+                    _prod_rr = round(abs(_eval['gain_at_target_pct']) / abs(_eval['loss_at_sl_pct']), 2
+                                    ) if _eval['loss_at_sl_pct'] != 0 else 0
+                    ev1, ev2, ev3, ev4, ev5 = st.columns(5)
+                    ev1.metric("Hebel", f"{_eval['leverage']:.1f}×")
+                    ev2.metric("Verlust bei SL", f"{_eval['loss_at_sl_pct']:+.1f}%",
+                               delta="OK" if _eval["within_max_loss"] else f">{_max_loss_form}%!",
+                               delta_color="normal" if _eval["within_max_loss"] else "inverse")
+                    ev3.metric("Gewinn bei Ziel", f"{_eval['gain_at_target_pct']:+.1f}%")
+                    _rr_ok = _prod_rr >= 1.5
+                    ev4.metric("R/R", f"{_prod_rr:.2f}",
+                               delta="OK" if _rr_ok else "< 1.5!",
+                               delta_color="normal" if _rr_ok else "inverse")
+                    ev5.metric("KO-Abstand zum SL", f"{_eval['ko_sl_distance_pct']:.1f}%")
+
+                    if not _eval["ko_safe"]:
+                        st.error("⚠ KO zwischen Entry und Stop-Loss – Knockout-Gefahr!")
+                    elif not _eval["within_max_loss"]:
+                        st.warning(f"⚠ Verlust bei SL ({_eval['loss_at_sl_pct']:.1f}%) > Maximum ({_max_loss_form}%)")
+                    elif not _rr_ok:
+                        st.warning(f"R/R = {_prod_rr:.2f} – unter Minimum 1.5")
+                    elif _dir_match:
+                        st.success("✅ Produkt passt – KO sicher, Verlust im Rahmen")
+
+            # ── Position-Sizing Empfehlung ──────────────────────────────
+            st.divider()
+            st.markdown("#### Position-Sizing")
+
+            _cash_info = get_free_cash()
+            _ps_m1, _ps_m2, _ps_m3, _ps_m4 = st.columns(4)
+            _ps_m1.metric("Freies Cash", f"€{_cash_info['balance']:,.2f}")
+            _ps_m2.metric("Gebunden", f"€{_cash_info['locked_cash']:,.2f}",
+                          delta=f"{_cash_info['open_count']} Pos." if _cash_info['open_count'] > 0 else "Keine",
+                          delta_color="off")
+            _ps_m3.metric("Portfolio", f"€{_cash_info['portfolio_value']:,.2f}")
+            _ps_m4.metric("2% Risiko", f"€{_cash_info['balance'] * 0.02:,.2f}")
+
+            if _cash_info["balance"] <= 0 and _cash_info["open_count"] == 0:
+                st.info("Noch kein Guthaben. Buche deine erste Einzahlung unter **Konto**.")
+
+            # Empfehlung berechnen wenn Produktpreis bekannt
+            _product_price_for_sizing = 0.0
+            if _loaded_product and _loaded_product.get("bid"):
+                _product_price_for_sizing = float(_loaded_product["bid"])
+
+            if _product_price_for_sizing > 0:
+                # Risk-2% Sizing
+                _ko_for_sizing = st.session_state.get("_loaded_ko_level")
+                _bv_for_sizing = st.session_state.get("_loaded_bv", 1.0)
+                if _ko_for_sizing and _sig_sl_form:
+                    from db import calc_position_size_risk
+                    _ps = calc_position_size_risk(
+                        _cash_info["balance"], _product_price_for_sizing,
+                        _sig_price_form, _sig_sl_form, _ko_for_sizing,
+                        _sig_dir_form, _bv_for_sizing,
+                    )
+                    if _ps["size"] > 0:
+                        st.success(
+                            f"**Empfehlung: {_ps['size']} Stück** kaufen "
+                            f"(à €{_product_price_for_sizing:.2f} = **€{_ps['invest_actual']:,.2f}**, "
+                            f"{_ps['pct_used']:.0f}% vom Cash) · "
+                            f"Risiko: **€{_ps['loss_at_sl']:,.2f}** bei SL "
+                            f"({_ps['loss_at_sl']/_cash_info['balance']*100:.1f}% vom Cash)"
+                        )
+                    else:
+                        st.warning(
+                            f"Zu wenig Cash (Risiko €{_ps['risk_amount']:,.2f}, "
+                            f"Produkt €{_product_price_for_sizing:.2f})"
+                        )
+                else:
+                    st.info("KO-Produkt auswaehlen fuer Risk-2% Sizing-Empfehlung")
+                    _ps = {"size": 0}
+                # Default-Stückzahl setzen
+                if _ps["size"] > 0:
+                    if "dlg_sig_tf_size" not in st.session_state or st.session_state.get("_ps_auto_size") != _ps["size"]:
+                        st.session_state["dlg_sig_tf_size"] = float(_ps["size"])
+                        st.session_state["_ps_auto_size"] = _ps["size"]
+
+            # Trade-Formular
+            st.divider()
+            _pre_isin = _loaded_product["isin"] if _loaded_product else ""
+
+            with st.form("dlg_sig_open_trade_form", clear_on_submit=True):
+                ot1, ot2 = st.columns(2)
+                with ot1:
+                    _dir_idx = 0 if _sig_dir_form == "LONG" else 1
+                    trade_direction = st.selectbox(
+                        "Richtung", ["LONG", "SHORT"],
+                        index=_dir_idx,
+                        key="dlg_sig_tf_dir",
+                    )
+                    trade_entry_date = st.date_input("Einstiegsdatum", value=dt.date.today(),
+                                                      key="dlg_sig_tf_date")
+                    trade_kaufkurs = st.number_input(
+                        "Kaufkurs Produkt (€)",
+                        min_value=0.0, step=0.01, format="%.4f",
+                        key="dlg_sig_tf_kk",
+                        help="Preis bei Trade Republic",
+                    )
+                with ot2:
+                    trade_size = st.number_input(
+                        "Stückzahl", value=1.0, min_value=0.01, step=1.0, format="%.0f",
+                        key="dlg_sig_tf_size",
+                    )
+                    trade_target = st.number_input(
+                        "Kursziel Basiswert",
+                        min_value=0.0, step=0.01, format="%.2f",
+                        key="dlg_sig_tf_tgt",
+                    )
+                    trade_stop = st.number_input(
+                        "Stop-Loss Basiswert",
+                        min_value=0.0, step=0.01, format="%.2f",
+                        key="dlg_sig_tf_stp",
+                    )
+
+                with st.expander("KO-Zertifikat Details", expanded=bool(_loaded_product)):
+                    ko1, ko2, ko3, ko4 = st.columns(4)
+                    with ko1:
+                        trade_wkn = st.text_input("WKN", key="dlg_sig_tf_wkn")
+                    with ko2:
+                        trade_ko_level = st.number_input(
+                            "KO-Schwelle",
+                            min_value=0.0, step=0.01, format="%.2f", key="dlg_sig_tf_ko")
+                    with ko3:
+                        trade_bv = st.number_input(
+                            "BV",
+                            min_value=0.001, step=0.01, format="%.3f", key="dlg_sig_tf_bv")
+                    with ko4:
+                        trade_emittent = st.text_input("Emittent", key="dlg_sig_tf_emit")
+
+                # Live preview
+                _preview_parts = []
+                if trade_kaufkurs > 0 and trade_ko_level > 0:
+                    _implied_stock = product_to_stock(trade_kaufkurs, trade_ko_level, trade_direction, trade_bv)
+                    _invest = trade_kaufkurs * trade_size
+                    _hebel = calc_leverage(_implied_stock, trade_ko_level, trade_direction)
+                    _preview_parts.append(f"Impl. Basiswert: **{_implied_stock:.2f}**")
+                    _preview_parts.append(f"Invest: **{_invest:.2f} €**")
+                    _preview_parts.append(f"Hebel: **{_hebel:.1f}×**" if _hebel != float("inf") else "Hebel: **∞**")
+                    if trade_target > 0:
+                        _tgt_prod = stock_to_product(trade_target, trade_ko_level, trade_direction, trade_bv)
+                        _tgt_gain = (_tgt_prod - trade_kaufkurs) / trade_kaufkurs * 100 if trade_kaufkurs > 0 else 0
+                        _preview_parts.append(f"Ziel: **{_tgt_prod:.2f} €** ({_tgt_gain:+.1f}%)")
+                    if trade_stop > 0:
+                        _stp_prod = stock_to_product(trade_stop, trade_ko_level, trade_direction, trade_bv)
+                        _stp_loss = (_stp_prod - trade_kaufkurs) / trade_kaufkurs * 100 if trade_kaufkurs > 0 else 0
+                        _preview_parts.append(f"Stop: **{_stp_prod:.2f} €** ({_stp_loss:+.1f}%)")
+                elif trade_kaufkurs > 0:
+                    _preview_parts.append(f"Invest: **{trade_kaufkurs * trade_size:.2f} €**")
+
+                if _preview_parts:
+                    st.info(" · ".join(_preview_parts))
+
+                tn1, tn2, tn3 = st.columns([2, 1, 1])
+                with tn1:
+                    trade_notes = st.text_input("Notizen (optional)", key="dlg_sig_tf_notes")
+                with tn2:
+                    trade_entry_fees = st.number_input(
+                        "Ordergebühr (€)", value=1.0, min_value=0.0,
+                        step=0.5, format="%.2f", key="dlg_sig_tf_fees")
+                with tn3:
+                    trade_exclude = st.checkbox("Test-Trade", key="dlg_sig_tf_exclude",
+                                                help="Vom Learning ausschließen")
+
+                submitted = st.form_submit_button("Trade eröffnen", type="primary", width="stretch")
+                if submitted:
+                    if trade_ko_level > 0 and trade_kaufkurs > 0:
+                        _entry_stock = product_to_stock(trade_kaufkurs, trade_ko_level, trade_direction, trade_bv)
+                    else:
+                        _entry_stock = trade_kaufkurs
+
+                    _trade_data = {
+                        "signal_id": base_sig["id"],
+                        "ticker": base_sig["ticker"],
+                        "name": base_sig["name"],
+                        "direction": trade_direction,
+                        "entry_date": trade_entry_date.isoformat(),
+                        "entry_price": _entry_stock,
+                        "size": trade_size,
+                        "target": trade_target if trade_target > 0 else None,
+                        "stop_loss": trade_stop if trade_stop > 0 else None,
+                        "notes": trade_notes or None,
+                        "is_test": int(trade_exclude),
+                        "entry_fees": trade_entry_fees,
+                    }
+                    if trade_ko_level > 0:
+                        _trade_data["wkn"] = trade_wkn or None
+                        _trade_data["ko_level"] = trade_ko_level
+                        _trade_data["bv"] = trade_bv
+                        _trade_data["isin"] = _pre_isin or None
+                        _trade_data["emittent"] = trade_emittent or None
+                        _trade_data["product_bid"] = trade_kaufkurs
+                    new_trade_id = open_trade(_trade_data)
+
+                    _msg = f"Trade #{new_trade_id} eröffnet: {trade_direction} {base_sig['name']}"
+                    if trade_ko_level > 0:
+                        _msg += f" · {trade_kaufkurs:.2f} € × {trade_size:.0f} = {trade_kaufkurs * trade_size:.2f} €"
+                    else:
+                        _msg += f" @ {_entry_stock:.2f} € × {trade_size:.0f} Stk."
+                    st.success(_msg)
+                    st.session_state.pop("dlg_sig_trade_product", None)
+                    st.rerun()
+
+
+# =========================================================================
+# PAGE: Empfehlungen (top)
+# =========================================================================
+if st.session_state["page"] == "top":
+    # Only scan when explicitly requested; otherwise load from DB
+    results_df = pd.DataFrame()
+    active_trades_df = pd.DataFrame()
+    market = {}
+    _failed_tickers = []
+
+    if st.session_state.get("run_scan"):
+        import scanner as _scanner_mod
+        _scan_bar = st.progress(0, text="Scan: Download ...")
+        _scanner_mod.progress_callback = lambda d, t, txt: _scan_bar.progress(d / t, text=f"Scan: {txt}")
+        scan_result = run_scan()
+        _scanner_mod.progress_callback = None
+        _scan_bar.empty()
+        if isinstance(scan_result, tuple) and len(scan_result) == 4:
+            results_df, active_trades_df, market, _failed_tickers = scan_result
+        elif isinstance(scan_result, tuple) and len(scan_result) == 3:
+            results_df, active_trades_df, market = scan_result
+        # Gruppiere Trade-Rows nach Ticker
+        if not active_trades_df.empty:
+            _grouped = _group_trade_rows(active_trades_df.to_dict("records"))
+            active_trades_df = pd.DataFrame(_grouped)
+        if _failed_tickers:
+            st.session_state["_failed_tickers"] = _failed_tickers
+        else:
+            st.session_state.pop("_failed_tickers", None)
+        st.session_state["run_scan"] = False
+        st.session_state["scan_results"] = results_df
+
+    # If session has cached scan results (e.g. from rescan), use them
+    if results_df.empty and "scan_results" in st.session_state:
+        results_df = st.session_state["scan_results"]
+
+    # If still empty, load latest PATTERN signals from DB (heute + letzte Tage)
+    if results_df.empty:
+        # Letzte 5 Handelstage durchsuchen
+        db_signals = []
+        _search_date = dt.date.today()
+        _days_checked = 0
+        _signal_date_str = None
+        while _days_checked < 10 and not db_signals:
+            _date_str = _search_date.isoformat()
+            _day_signals = get_signals(date=_date_str, limit=500)
+            # Nur Pattern-Signale
+            _day_patterns = [s for s in _day_signals
+                             if s.get("pattern")]
+            if _day_patterns:
+                db_signals = _day_patterns
+                _signal_date_str = _date_str
+            _search_date -= dt.timedelta(days=1)
+            _days_checked += 1
+
+        if not db_signals:
+            st.info("📊 **Keine Pattern-Signale** in den letzten 10 Tagen gefunden. Scan starten!")
+        elif _signal_date_str and _signal_date_str != dt.date.today().isoformat():
+            st.info(f"📊 **Heute keine neuen Signale.** Zeige letzte Pattern-Signale vom **{_signal_date_str}**.")
+        if db_signals:
+            _latest_ts = max((s.get("created_at", "") for s in db_signals), default="")
+            _open_tickers = {t["ticker"] for t in get_trades(status="OPEN")}
+            if _open_tickers:
+                db_signals = [s for s in db_signals if s["ticker"] not in _open_tickers]
+            results_df = pd.DataFrame(db_signals).rename(columns={
+                "ticker": "Ticker", "name": "Name", "direction": "Richtung",
+                "score": "Score", "entry": "Entry", "pattern": "Pattern",
+                "target": "Ziel", "stop_loss": "Stop-Loss",
+                "risk_reward": "R/R",
+                "detail": "Detail",
+            })
+            _db_col_map = {
+                "rsi": "RSI", "adx": "ADX", "atr_pct": "ATR%",
+                "analyst_rating": "Analyst",
+                "analyst_target": "Kursziel",
+            }
+            for db_col, display_col in _db_col_map.items():
+                if db_col in results_df.columns and display_col not in results_df.columns:
+                    results_df[display_col] = results_df[db_col]
+            for col in ["RSI", "ADX", "ATR%", "Analyst", "Kursziel"]:
+                if col not in results_df.columns:
+                    results_df[col] = None
+            if "Ticker" in results_df.columns:
+                if "Sparte" not in results_df.columns:
+                    results_df["Sparte"] = results_df["Ticker"].map(get_sector)
+                if "Index" not in results_df.columns:
+                    results_df["Index"] = results_df["Ticker"].map(get_index)
+            # SL-Dist% berechnen
+            if "Entry" in results_df.columns and "Stop-Loss" in results_df.columns:
+                results_df["SL-Dist%"] = ((results_df["Entry"] - results_df["Stop-Loss"]).abs()
+                                           / results_df["Entry"] * 100).round(1)
+            results_df = results_df.sort_values("Score", ascending=False)
+            st.session_state["scan_results"] = results_df
+            try:
+                _ts_dt = dt.datetime.fromisoformat(_latest_ts)
+                _ts_str = _ts_dt.strftime("%d.%m.%Y %H:%M Uhr")
+            except (ValueError, TypeError):
+                _ts_str = _signal_date_str or "unbekannt"
+            _data_info_placeholder.caption(f"Stand von {_ts_str}")
+
+    # Load open trades from DB (always, independent of scan)
+    _db_open_trades = get_trades(status="OPEN")
+    if active_trades_df.empty and _db_open_trades:
+        _rows = [_build_trade_row(t) for t in _db_open_trades]
+        _rows = _group_trade_rows(_rows)
+        active_trades_df = pd.DataFrame(_rows)
+
+    if results_df.empty:
+        st.warning("Keine Daten vorhanden. Bitte zuerst einen Scan starten.")
+        st.stop()
+
+    # ── Konsens-Spalten aus DB ergänzen wenn sie fehlen ──
+    if "Konsens" not in results_df.columns and not results_df.empty:
+        from db import get_ai_assessments
+        _konsens, _ki_dir, _ki_score = [], [], []
+        _today = dt.date.today().isoformat()
+        for _, _r in results_df.iterrows():
+            _ai_list = get_ai_assessments(_r["Ticker"], limit=1)
+            _ai = _ai_list[0] if _ai_list else None
+            if _ai and _ai.get("date") == _today and _ai.get("direction"):
+                _ki_dir.append(_ai["direction"])
+                _ki_score.append(_ai.get("score"))
+                if _ai["direction"] == _r["Richtung"]:
+                    _konsens.append("\u2605\u2605\u2605")
+                else:
+                    _konsens.append("\u26a0")
+            else:
+                _konsens.append("\u2013")
+                _ki_dir.append(None)
+                _ki_score.append(None)
+        results_df = results_df.copy()
+        results_df["Konsens"] = _konsens
+        results_df["KI"] = _ki_dir
+        results_df["KI-Score"] = _ki_score
+        st.session_state["scan_results"] = results_df
+
+    # --- Market context banner ---
+    if market:
+        _emoji = {"bull": "🟢", "bear": "🔴", "neutral": "⚪"}
+        _de = market.get("DE", {})
+        _us = market.get("US", {})
+        _de_trend = _de.get("trend", "neutral")
+        _us_trend = _us.get("trend", "neutral")
+        _vix = market.get("vix_level", "?")
+        st.info(
+            f"**Marktumfeld:** "
+            f"DAX {_emoji.get(_de_trend, '⚪')} {_de_trend.upper()} ({_de.get('change_1m', 0):+.1f}%) · "
+            f"S&P 500 {_emoji.get(_us_trend, '⚪')} {_us_trend.upper()} ({_us.get('change_1m', 0):+.1f}%) · "
+            f"VIX: {_vix} ({market.get('vix_regime', '?')})"
+        )
+
+    # --- Pattern-System Markt-Warning (DAX SMA200 / EMA20) ---
+    try:
+        from backtest import _download as _bt_download
+        _dax_warn = _bt_download("^GDAXI", days=300)
+        if _dax_warn is not None and len(_dax_warn) >= 200:
+            _dax_c = float(_dax_warn["Close"].iloc[-1])
+            _dax_sma200 = float(_dax_warn["Close"].rolling(200).mean().iloc[-1])
+            _dax_ema20 = float(_dax_warn["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+            if _dax_c < _dax_sma200:
+                st.error(
+                    f"⚠️ **Achtung: DAX unter SMA200** ({_dax_c:,.0f} < {_dax_sma200:,.0f}) — "
+                    f"Markt in Schwächephase. Neue Trades mit Vorsicht!"
+                )
+            elif _dax_c > _dax_ema20 and _dax_c < _dax_sma200 * 1.02:
+                st.warning(
+                    f"🔄 **Mögliche Erholung: DAX über EMA20** ({_dax_c:,.0f} > {_dax_ema20:,.0f}) — "
+                    f"aber noch nahe SMA200 ({_dax_sma200:,.0f}). Vorsichtig einsteigen."
+                )
+    except Exception:
+        pass
+
+    # --- Summary metrics ---
+    if not results_df.empty:
+
+        # --- Sector tiles (colored HTML, visual overview) ---
+        _sector_scores = compute_sector_scores()
+        if _sector_scores:
+            _idx_tiles = [(n, d) for n, d in _sector_scores.items() if d.get("is_index")]
+            _sec_tiles = [(n, d) for n, d in _sector_scores.items() if not d.get("is_index")]
+            _idx_tiles.sort(key=lambda x: x[1]["score"], reverse=True)
+            _sec_tiles.sort(key=lambda x: x[1]["score"], reverse=True)
+
+            def _tile_bg(score):
+                if score > 50: return "#1b5e20"
+                if score > 20: return "#2e7d32"
+                if score > 5:  return "#388e3c"
+                if score > -5: return "#455a64"
+                if score > -20: return "#c62828"
+                if score > -50: return "#b71c1c"
+                return "#7f0000"
+
+            def _render_tiles(items, cols):
+                html = f'<div style="display:grid; grid-template-columns:repeat({cols},1fr); gap:6px;">'
+                for name, data in items:
+                    _score = data["score"]
+                    _bg = _tile_bg(_score)
+                    _label = name.replace("Index: ", "")
+                    _n = data["n_tickers"]
+                    _tt = f"{_n} Titel · " if _n > 1 else ""
+                    html += (
+                        f'<div style="background:{_bg}; border-radius:8px; padding:8px 10px; '
+                        f'text-align:center; border:1px solid #555;" '
+                        f'title="{_tt}5d: {data["avg_5d"]:+.1f}% · 14d: {data["avg_14d"]:+.1f}%">'
+                        f'<div style="font-size:0.75em; color:#ccc;">{_label}</div>'
+                        f'<div style="font-size:1.3em; font-weight:bold;">{data["arrow"]} {_score:+.0f}</div>'
+                        f'</div>'
+                    )
+                html += '</div>'
+                return html
+
+            # Index row (5 indices)
+            if _idx_tiles:
+                st.markdown(_render_tiles(_idx_tiles, len(_idx_tiles)), unsafe_allow_html=True)
+                st.divider()
+
+            # Sector rows (5 per row)
+            if _sec_tiles:
+                st.markdown(
+                    f'<div style="margin-top:6px;">{_render_tiles(_sec_tiles, 7)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
+
+        st.divider()
+
+        n_long = (results_df["Richtung"] == "LONG").sum()
+        n_short = (results_df["Richtung"] == "SHORT").sum()
+        avg_score = results_df["Score"].mean()
+
+        _stored_failed = st.session_state.get("_failed_tickers", [])
+        _n_failed = len(_stored_failed)
+        _n_total = len(results_df) + _n_failed
+        _scan_label = f"{len(results_df)} / {_n_total}" if _n_failed else f"{len(results_df)}"
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Gescannt", _scan_label)
+        s2.metric("LONG", n_long)
+        s3.metric("SHORT", n_short)
+        s4.metric("Ø Score", f"{avg_score:+.1f}")
+
+        # --- Filter ---
+        # Collect available sectors + indices for multiselect options
+        _avail_sectors = sorted(results_df["Sparte"].dropna().unique()) if "Sparte" in results_df.columns else []
+        _avail_indices = sorted(results_df["Index"].dropna().unique()) if "Index" in results_df.columns else []
+
+        filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
+        with filter_col1:
+            dir_filter = st.multiselect(
+                "Richtung", ["LONG", "SHORT"],
+                default=["LONG", "SHORT"],
+                key="flt_dir",
+            )
+        with filter_col2:
+            sector_filter = st.multiselect(
+                "Sparte", _avail_sectors, default=[],
+                placeholder="Alle Sparten",
+                key="flt_sector",
+            )
+        with filter_col3:
+            min_score = st.number_input("Min. Score", value=0, min_value=0,
+                                        max_value=100, step=5, key="flt_score")
+        with filter_col4:
+            min_rr = st.number_input("Min. R/R", value=1.5, min_value=0.0,
+                                     max_value=10.0, step=0.1, format="%.1f",
+                                     key="flt_rr")
+        with filter_col5:
+            min_gain = st.number_input("Min. Gewinn %", value=0.0, min_value=0.0,
+                                       max_value=50.0, step=1.0, format="%.1f",
+                                       key="flt_gain")
+
+        # --- Einzelne Ticker neu berechnen ---
+        _rc1, _rc2 = st.columns([3, 1])
+        with _rc1:
+            _rescan_input = st.text_input(
+                "Ticker neu berechnen",
+                placeholder="z.B. XEL, S92.DE",
+                label_visibility="collapsed",
+            )
+        with _rc2:
+            _rescan_btn = st.button("Neu berechnen", type="tertiary", key="rescan_single")
+        if _rescan_btn and _rescan_input:
+            _rescan_tickers = [t.strip().upper() for t in _rescan_input.split(",") if t.strip()]
+            if _rescan_tickers:
+                with st.spinner(f"Berechne {', '.join(_rescan_tickers)} neu …"):
+                    _new_sigs, _still_fail = retry_failed(_rescan_tickers)
+                if _new_sigs:
+                    _new_df = pd.DataFrame(_new_sigs)
+                    # Bestehende Zeilen ersetzen, neue anhängen
+                    _existing = results_df[~results_df["Ticker"].isin(_new_df["Ticker"])]
+                    results_df = pd.concat([_existing, _new_df], ignore_index=True)
+                    st.session_state["scan_results"] = results_df
+                if _still_fail:
+                    st.toast(f"Fehlgeschlagen: {', '.join(_still_fail)}", icon="⚠️")
+                st.cache_data.clear()
+                st.rerun()
+
+        # Gewinn % vor dem Filtern berechnen (auf Kopie, nicht session state mutieren)
+        def _calc_gain(row):
+            entry = row.get("Entry")
+            ziel = row.get("Ziel")
+            if not entry or not ziel or pd.isna(entry) or pd.isna(ziel) or entry == 0:
+                return None
+            if row.get("Richtung") == "SHORT":
+                return (entry - ziel) / entry * 100
+            return (ziel - entry) / entry * 100
+
+        _df = results_df.copy()
+        _df["Gewinn %"] = _df.apply(_calc_gain, axis=1)
+
+        # Sortierung nach Combo-Score (absteigend)
+        # Score kommt direkt aus dem Scanner (ADX + SL-Dist)
+
+        _mask = _df["Richtung"].isin(dir_filter) & (_df["Score"].abs() >= min_score)
+        if sector_filter and "Sparte" in _df.columns:
+            _mask = _mask & _df["Sparte"].isin(sector_filter)
+        if min_rr > 0 and "R/R" in _df.columns:
+            _mask = _mask & (_df["R/R"].fillna(0) >= min_rr)
+        if min_gain > 0:
+            _mask = _mask & (_df["Gewinn %"].fillna(0) >= min_gain)
+        filtered = _df[_mask].copy()
+
+        # Nach Score sortieren (beste zuerst)
+        if not filtered.empty and "Score" in filtered.columns:
+            filtered = filtered.sort_values("Score", ascending=False)
+
+        # --- Recommendations table ---
+        if filtered.empty:
+            st.info("Keine Ergebnisse für die gewählten Filter.")
+        else:
+            display_cols = [
+                "Ticker", "Name", "Index", "Pattern", "Richtung",
+                "Entry", "Stop-Loss", "Ziel", "R/R", "SL-Dist%",
+                "Score", "ADX", "RSI", "ATR%",
+            ]
+            display = filtered[[c for c in display_cols if c in filtered.columns]].copy()
+
+            selection = st.dataframe(
+                display,
+                width="stretch",
+                hide_index=True,
+                height=min(45 * len(display) + 50, 800),
+                on_select="rerun",
+                selection_mode="single-row",
+                column_config={
+                    "Ticker": st.column_config.TextColumn(
+                        "Ticker",
+                        help="Yahoo Finance Ticker-Symbol"),
+                    "Name": st.column_config.TextColumn(
+                        "Name",
+                        help="Name des Unternehmens"),
+                    "Index": st.column_config.TextColumn(
+                        "Index",
+                        help="Zugehöriger Leitindex"),
+                    "Pattern": st.column_config.TextColumn(
+                        "Pattern",
+                        help="Erkanntes Chart-Pattern"),
+                    "Richtung": st.column_config.TextColumn(
+                        "Richtung",
+                        help="LONG = Kauf-Signal, SHORT = Verkauf-Signal"),
+                    "Entry": st.column_config.NumberColumn(
+                        "Entry",
+                        format="%.2f",
+                        help="Einstiegskurs (Basiswert)"),
+                    "R/R": st.column_config.ProgressColumn(
+                        "R/R",
+                        format="%.1f",
+                        min_value=0,
+                        max_value=3.0,
+                        help="Risk/Reward. Backtest-Optimum: >= 1.0"),
+                    "SL-Dist%": st.column_config.NumberColumn(
+                        "SL-Dist%",
+                        format="%.1f%%",
+                        help="Abstand Stop-Loss zum Entry in %"),
+                    "Score": st.column_config.NumberColumn(
+                        "Score",
+                        format="%+.1f",
+                        help="Signal-Score aus dem Scanner"),
+                    "Konsens": st.column_config.TextColumn(
+                        "Konsens",
+                        help="★★★ = Tech + KI gleiche Richtung, ⚠ = Widerspruch, – = keine KI-Bewertung"),
+                    "KI-Score": st.column_config.NumberColumn(
+                        "KI",
+                        format="%+.0f",
+                        help="KI-Bewertungsscore (-100 bis +100)"),
+                },
+            )
+
+            # Signal dialog trigger from recommendations table
+            if selection and selection.selection and selection.selection.rows:
+                clicked_idx = selection.selection.rows[0]
+                clicked_ticker = display.iloc[clicked_idx]["Ticker"]
+                clicked_name = display.iloc[clicked_idx]["Name"]
+                _prev = st.session_state.get("_prev_sig_sel")
+                if _prev != clicked_ticker:
+                    st.session_state["_prev_sig_sel"] = clicked_ticker
+                    show_signal_dialog(clicked_ticker)
+                else:
+                    st.session_state["_prev_sig_sel"] = None
+                    st.rerun()
+
+    # --- Fehlgeschlagene Ticker: Retry-Tabelle ---
+    _stored_failed = st.session_state.get("_failed_tickers", [])
+    if _stored_failed:
+        st.divider()
+        _all_names = {**INDICES, **DAX_COMPONENTS, **TECDAX_COMPONENTS,
+                      **MDAX_COMPONENTS, **DOW_COMPONENTS, **NASDAQ_COMPONENTS}
+        _fail_df = pd.DataFrame({
+            "Auswahl": [True] * len(_stored_failed),
+            "Ticker": _stored_failed,
+            "Name": [_all_names.get(t, t) for t in _stored_failed],
+        })
+        st.warning(f"**{len(_stored_failed)} Ticker fehlgeschlagen** – Daten konnten nicht geladen werden.")
+        _edited = st.data_editor(
+            _fail_df,
+            column_config={
+                "Auswahl": st.column_config.CheckboxColumn("", default=True),
+                "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
+                "Name": st.column_config.TextColumn("Name", disabled=True),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="fail_editor",
+        )
+        _fc1, _fc2 = st.columns([1, 4])
+        with _fc1:
+            if st.button("Erneut laden", type="primary", key="retry_failed_btn"):
+                _selected = _edited[_edited["Auswahl"]]["Ticker"].tolist()
+                if _selected:
+                    with st.spinner(f"Lade {len(_selected)} Ticker erneut …"):
+                        _new_sigs, _still_failed = retry_failed(_selected)
+                    if _still_failed:
+                        st.session_state["_failed_tickers"] = _still_failed
+                    else:
+                        st.session_state.pop("_failed_tickers", None)
+                    _n_ok = len(_selected) - len(_still_failed)
+                    if _n_ok:
+                        st.success(f"{_n_ok} Ticker erfolgreich nachgeladen.")
+                    if _still_failed:
+                        st.warning(f"{len(_still_failed)} weiterhin fehlgeschlagen.")
+                    st.rerun()
+                else:
+                    st.info("Keine Ticker ausgewählt.")
+        with _fc2:
+            _all_checked = _edited["Auswahl"].all()
+            if not _all_checked:
+                if st.button("Alle auswählen", type="tertiary", key="select_all_failed"):
+                    st.session_state["fail_editor"] = {"edited_rows": {
+                        str(i): {"Auswahl": True} for i in range(len(_stored_failed))
+                    }}
+                    st.rerun()
+
+
+# =========================================================================
+# PAGE: Meine Trades
+# =========================================================================
+elif st.session_state["page"] == "trades":
+    st.subheader("Meine Trades")
+
+    # --- Cash-Übersicht ---
+    _ci = get_free_cash()
+    _ci_c1, _ci_c2, _ci_c3, _ci_c4, _ci_c5 = st.columns(5)
+    _ci_c1.metric("Freies Cash", f"€{_ci['balance']:,.2f}")
+    _ci_c2.metric("Gebunden", f"€{_ci['locked_cash']:,.2f}")
+    _ci_c3.metric("Portfolio", f"€{_ci['portfolio_value']:,.2f}")
+    _ci_c4.metric("Offene Pos.", f"{_ci['open_count']} / 5")
+    _ci_c5.metric("Nächster Trade", f"€{_ci['balance'] * 0.20:,.2f}",
+                   delta="20% von frei", delta_color="off")
+    if _ci["balance"] <= 0 and _ci["open_count"] == 0:
+        st.info("Noch keine Buchungen vorhanden. Gehe zu **Konto** um deine erste Einzahlung zu buchen.")
+    st.divider()
+
+    # --- Trade statistics ---
+    tstats = get_trade_stats()
+    if tstats["total_trades"] > 0:
+        ts1, ts2, ts3, ts4, ts5, ts6 = st.columns(6)
+        ts1.metric("Offen", tstats["open"])
+        ts2.metric("Geschlossen", tstats["closed"])
+        ts3.metric("Gewinner", tstats["winners"])
+        ts4.metric("Verlierer", tstats["losers"])
+        ts5.metric("Ø Rendite", f"{tstats['avg_return_pct']:+.1f}%")
+        ts6.metric("Gesamt P/L", f"{tstats['total_return']:+.2f} €")
+        st.divider()
+
+    # --- Portfolio-Verlauf ---
+    all_trades = [t for t in get_trades() if not t.get("is_test")]
+    if all_trades:
+        # Datum-Range ermitteln (frühester Einstieg bis heute)
+        _earliest = min(t["entry_date"] for t in all_trades)
+        _date_range = pd.date_range(start=_earliest, end=dt.date.today(), freq="B")  # Börsentage
+
+        # Preise aller beteiligten Ticker laden
+        _price_cache = {}
+        _tickers_needed = set(t["ticker"] for t in all_trades)
+        for _tk in _tickers_needed:
+            rows = get_prices(_tk, start=_earliest)
+            if rows:
+                _pdf = pd.DataFrame(rows)
+                _pdf["date"] = pd.to_datetime(_pdf["date"])
+                _pdf = _pdf.set_index("date").sort_index()
+                _c = "close" if "close" in _pdf.columns else "Close"
+                _price_cache[_tk] = _pdf[_c]
+
+        # Pro Tag: Investiert (Einstandswert) + Aktueller Wert berechnen
+        _invested_series = []
+        _value_series = []
+        _pnl_series = []
+
+        for _day in _date_range:
+            _day_str = _day.strftime("%Y-%m-%d")
+            _invested_day = 0.0
+            _value_day = 0.0
+
+            for t in all_trades:
+                # War dieser Trade an dem Tag aktiv?
+                if t["entry_date"] > _day_str:
+                    continue
+                if t.get("status") == "CLOSED" and t.get("exit_date") and t["exit_date"] < _day_str:
+                    continue
+
+                _size = t.get("size") or 1
+                _ko = t.get("ko_level")
+                _bv = t.get("bv") or 1.0
+                _tdir = t["direction"]
+                _entry_stock = t["entry_price"]
+                _fees = (t.get("entry_fees") or 1.0) + 1.0
+
+                # Aktueller Kurs des Underlyings an diesem Tag
+                _prices = _price_cache.get(t["ticker"])
+                if _prices is None or _prices.empty:
+                    continue
+                # Nächsten verfügbaren Kurs finden (forward-fill)
+                _avail = _prices[_prices.index <= _day]
+                if _avail.empty:
+                    continue
+                _cur_stock = float(_avail.iloc[-1])
+
+                if _ko:
+                    _entry_p = stock_to_product(_entry_stock, _ko, _tdir, _bv)
+                    _cur_p = stock_to_product(_cur_stock, _ko, _tdir, _bv)
+                else:
+                    _entry_p = _entry_stock
+                    _cur_p = _cur_stock
+
+                _invested_day += _entry_p * _size
+                _value_day += _cur_p * _size - _fees
+
+            _invested_series.append(_invested_day)
+            _value_series.append(_value_day)
+            _pnl_series.append(_value_day - _invested_day)
+
+        _port_df = pd.DataFrame({
+            "Datum": _date_range,
+            "Investiert": _invested_series,
+            "Wert": _value_series,
+            "P/L": _pnl_series,
+        })
+        # Nur Tage mit aktiven Positionen anzeigen
+        _port_df = _port_df[_port_df["Investiert"] > 0]
+
+        if not _port_df.empty:
+            _pfig = go.Figure()
+            _pfig.add_trace(go.Scatter(
+                x=_port_df["Datum"], y=_port_df["Investiert"],
+                mode="lines", name="Investiert",
+                line=dict(color="#78909c", width=1, dash="dash"),
+            ))
+            _pfig.add_trace(go.Scatter(
+                x=_port_df["Datum"], y=_port_df["Wert"],
+                mode="lines", name="Wert",
+                line=dict(color="#42a5f5", width=2),
+                fill="tonexty",
+                fillcolor="rgba(66,165,245,0.1)",
+            ))
+            # Nulllinie für P/L
+            _pfig.add_hline(y=0, line_dash="dot", line_color="#ffffff", line_width=0.5, opacity=0.3,
+                            layer="below")
+            _pfig.update_layout(
+                height=300, template="plotly_dark",
+                xaxis_rangeslider_visible=False,
+                yaxis_title="€",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(l=60, r=30, t=10, b=40),
+            )
+            st.plotly_chart(_pfig, use_container_width=True)
+
+    # --- Open trades ---
+    st.divider()
+    st.markdown("#### Offene Trades")
+    open_trades = get_trades(status="OPEN")
+
+    if open_trades:
+        _ot_rows = [_build_trade_row(t) for t in open_trades]
+        _ot_rows = _group_trade_rows(_ot_rows)
+        _ot_df = pd.DataFrame(_ot_rows)
+
+        # Invest/Wert für Einzel-Trades berechnen
+        if "Invest" not in _ot_df.columns:
+            _ot_df["Invest"] = 0.0
+        if "Wert" not in _ot_df.columns:
+            _ot_df["Wert"] = 0.0
+        _mask_single = _ot_df["_n_trades"] == 1
+        _ot_df.loc[_mask_single, "Invest"] = (
+            _ot_df.loc[_mask_single, "Einstieg"] * _ot_df.loc[_mask_single, "Stk."]
+        ).round(2)
+        _ot_df.loc[_mask_single, "Wert"] = (
+            _ot_df.loc[_mask_single, "Aktuell"] * _ot_df.loc[_mask_single, "Stk."]
+        ).round(2)
+
+        _display_cols = [
+            "trade_id", "_n_trades", "Name", "Richtung", "Stk.",
+            "Einstieg", "Aktuell", "Stop", "Ziel",
+            "Invest", "Wert", "P/L %", "P/L €",
+            "Profit R", "Tage",
+        ]
+
+        _col_config = {
+            "trade_id": None,
+            "_n_trades": None,
+            "Ticker": None,
+            "Name": st.column_config.TextColumn("Name", help="Name des Basiswerts"),
+            "Stk.": st.column_config.NumberColumn("Stk.", format="%.0f"),
+            "Einstieg": st.column_config.NumberColumn("Einstieg", format="%.2f €"),
+            "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f €"),
+            "Stop": st.column_config.NumberColumn("Stop", format="%.2f €"),
+            "Ziel": st.column_config.NumberColumn("Ziel", format="%.2f €"),
+            "Invest": st.column_config.NumberColumn("Invest", format="%.2f €"),
+            "Wert": st.column_config.NumberColumn("Wert", format="%.2f €"),
+            "P/L %": st.column_config.NumberColumn("P/L %", format="%+.1f%%"),
+            "P/L €": st.column_config.NumberColumn("P/L €", format="%+.2f €"),
+            "Profit R": st.column_config.NumberColumn(
+                "Profit R", format="%+.2f R",
+                help="-1R = Stop-Loss, 0R = Entry, 2R = Target"),
+            "Tage": st.column_config.NumberColumn("Tage", format="%d", help="Tage seit Eröffnung"),
+        }
+
+        def _render_trade_table(df, title, emoji, key_suffix):
+            """Rendere eine Trade-Tabelle mit Titel und Klick-Handler."""
+            if df.empty:
+                return
+            st.markdown(f"#### {emoji} {title} ({len(df)})")
+            _display = df[[c for c in _display_cols if c in df.columns]].copy()
+            _styled = _style_trades_df(_display)
+            _sel = st.dataframe(
+                _styled, hide_index=True, width="stretch",
+                height=min(45 * len(_display) + 50, 300),
+                on_select="rerun", selection_mode="single-row",
+                column_config=_col_config,
+                key=f"trades_{key_suffix}",
+            )
+            if _sel and _sel.selection and _sel.selection.rows:
+                _idx = _sel.selection.rows[0]
+                _tid = int(df.iloc[_idx]["trade_id"])
+                _tname = df.iloc[_idx]["Name"]
+                _tticker = df.iloc[_idx]["Ticker"]
+                _n = int(df.iloc[_idx].get("_n_trades", 1))
+                _prev = st.session_state.get(f"_prev_{key_suffix}")
+                if _prev != _tid:
+                    st.session_state[f"_prev_{key_suffix}"] = _tid
+                    if _n > 1:
+                        show_position_dialog(_tticker)
+                    else:
+                        show_trade_dialog(_tid)
+                else:
+                    st.session_state[f"_prev_{key_suffix}"] = None
+                    st.rerun()
+
+        # Aufteilen nach Status
+        _has_r = "Profit R" in _ot_df.columns and _ot_df["Profit R"].notna().any()
+        if _has_r:
+            _critical = _ot_df[_ot_df["Profit R"] <= -0.8].copy()
+            _target = _ot_df[_ot_df["Profit R"] >= 1.5].copy()
+            _running = _ot_df[
+                (_ot_df["Profit R"] > -0.8) & (_ot_df["Profit R"] < 1.5)
+            ].copy()
+            # Trades ohne Profit R (kein SL) → running
+            _no_r = _ot_df[_ot_df["Profit R"].isna()].copy()
+            _running = pd.concat([_running, _no_r], ignore_index=True)
+        else:
+            _critical = pd.DataFrame()
+            _target = pd.DataFrame()
+            _running = _ot_df.copy()
+
+        _render_trade_table(_critical, "Kritisch — Handlungsbedarf", "🔴", "critical")
+        _render_trade_table(_target, "Ziel erreicht — Gewinnmitnahme prüfen", "🎯", "target")
+        _render_trade_table(_running, "Laufende Trades", "🟢", "running")
+    else:
+        st.caption("Keine offenen Trades.")
+
+    # --- Trade Analytics Dashboard ---
+    st.divider()
+    st.markdown("#### 📊 Trade-Analyse")
+
+    from trade_analytics import get_trade_analytics
+    _analytics = get_trade_analytics()
+
+    if _analytics["has_data"]:
+        # Basis-Metriken
+        _am1, _am2, _am3, _am4, _am5, _am6 = st.columns(6)
+        _am1.metric("Trades", f"{_analytics['n_trades']}")
+        _am2.metric("Win-Rate", f"{_analytics['win_rate']:.0f}%")
+        _am3.metric("Ø Gewinn", f"{_analytics['avg_win_pct']:+.1f}%")
+        _am4.metric("Ø Verlust", f"-{_analytics['avg_loss_pct']:.1f}%")
+        _am5.metric("Erwartungswert", f"{_analytics['expectancy']:+.2f}%")
+        _am6.metric("Max Verlustserie", f"{_analytics['max_consecutive_losses']}")
+
+        # Detail-Tabs
+        _tab_sl, _tab_target, _tab_pattern, _tab_timing = st.tabs([
+            "SL-Analyse", "Target-Analyse", "Pattern/Sektor", "Timing"
+        ])
+
+        with _tab_sl:
+            _sc1, _sc2, _sc3 = st.columns(3)
+            _sc1.metric("SL eingehalten", f"{_analytics['sl_held']}")
+            _sc2.metric("SL durchbrochen", f"{_analytics['sl_breached']}",
+                        delta=f"von {_analytics['n_losers']} Verlierern",
+                        delta_color="off")
+            _sc3.metric("SL zu eng?",
+                        f"{_analytics['sl_too_tight']} Trades",
+                        delta="erholten sich nach SL >5%" if _analytics['sl_too_tight'] > 0 else "keine Daten",
+                        delta_color="off")
+
+            if _analytics.get("avg_min_r") is not None:
+                st.caption(f"Ø tiefster Punkt im Trade: **{_analytics['avg_min_r']:+.2f}R** "
+                           f"(bei -1.0R wäre der SL exakt getroffen)")
+
+        with _tab_target:
+            _tc1, _tc2, _tc3 = st.columns(3)
+            _tc1.metric("Zu früh geschlossen",
+                        f"{_analytics['closed_too_early']} Trades",
+                        delta=f"von {_analytics['n_winners']} Gewinnern",
+                        delta_color="off")
+            if _analytics.get("avg_post_exit_gain") is not None:
+                _tc2.metric("Ø Kurs nach Exit",
+                            f"{_analytics['avg_post_exit_gain']:+.1f}%",
+                            delta="10 Tage nach Verkauf",
+                            delta_color="off")
+            if _analytics.get("avg_max_r") is not None:
+                _tc3.metric("Ø höchster Punkt",
+                            f"{_analytics['avg_max_r']:+.2f}R",
+                            delta="während des Trades",
+                            delta_color="off")
+
+            if _analytics.get("avg_max_r") is not None and _analytics["avg_max_r"] > 2.0:
+                st.info(f"💡 Deine Trades erreichten im Schnitt **{_analytics['avg_max_r']:.1f}R** — "
+                        f"das Target von 2.0R könnte zu niedrig sein.")
+            elif _analytics.get("avg_post_exit_gain") is not None and _analytics["avg_post_exit_gain"] > 3:
+                st.info(f"💡 Nach deinen Verkäufen lief der Kurs im Schnitt noch **{_analytics['avg_post_exit_gain']:.1f}%** weiter. "
+                        f"Schließt du zu früh?")
+
+        with _tab_pattern:
+            if _analytics["pattern_stats"]:
+                st.markdown("**Pattern-Performance (Live):**")
+                _pat_rows = []
+                for pat, stats in sorted(_analytics["pattern_stats"].items(),
+                                         key=lambda x: x[1]["wr"], reverse=True):
+                    _pat_rows.append({
+                        "Pattern": pat,
+                        "Trades": stats["n"],
+                        "WR": f"{stats['wr']:.0f}%",
+                        "Ø Return": f"{stats['avg_return']:+.1f}%",
+                    })
+                st.dataframe(pd.DataFrame(_pat_rows), hide_index=True, use_container_width=True)
+
+            if _analytics["sector_stats"]:
+                st.markdown("**Sektor-Performance (Live):**")
+                _sec_rows = []
+                for sec, stats in sorted(_analytics["sector_stats"].items(),
+                                         key=lambda x: x[1]["avg_return"], reverse=True):
+                    if stats["n"] >= 2:
+                        _sec_rows.append({
+                            "Sektor": sec,
+                            "Trades": stats["n"],
+                            "WR": f"{stats['wr']:.0f}%",
+                            "Ø Return": f"{stats['avg_return']:+.1f}%",
+                        })
+                if _sec_rows:
+                    st.dataframe(pd.DataFrame(_sec_rows), hide_index=True, use_container_width=True)
+
+        with _tab_timing:
+            _tt1, _tt2, _tt3 = st.columns(3)
+            if _analytics.get("avg_days_win") is not None:
+                _tt1.metric("Ø Haltedauer Gewinner", f"{_analytics['avg_days_win']:.0f} Tage")
+            if _analytics.get("avg_days_loss") is not None:
+                _tt2.metric("Ø Haltedauer Verlierer", f"{_analytics['avg_days_loss']:.0f} Tage")
+            _tt3.metric("Max Gewinnserie", f"{_analytics['max_consecutive_wins']}")
+
+            if (_analytics.get("avg_days_loss") and _analytics.get("avg_days_win")
+                    and _analytics["avg_days_loss"] > _analytics["avg_days_win"] * 2):
+                st.warning(f"⚠️ Du hältst Verlierer ({_analytics['avg_days_loss']:.0f}d) deutlich länger "
+                           f"als Gewinner ({_analytics['avg_days_win']:.0f}d). "
+                           f"Klassischer Fehler — Verlierer schneller schließen!")
+    else:
+        st.caption("Noch keine geschlossenen Trades für Analyse.")
+
+    # --- Closed trades ---
+    st.divider()
+    st.markdown("#### Geschlossene Trades")
+    closed_trades = get_trades(status="CLOSED")
+
+    if closed_trades:
+        from ko_calc import stock_to_product as _s2p
+        _ct_rows = []
+        for ct in closed_trades:
+            ko = ct.get("ko_level")
+            bv = ct.get("bv") or 1.0
+            _dir = ct["direction"]
+            _size = ct.get("size") or 1
+            _sl = ct.get("stop_loss")
+
+            if ko:
+                entry_prod = _s2p(ct["entry_price"], ko, _dir, bv)
+                exit_prod = _s2p(ct["exit_price"], ko, _dir, bv) if ct.get("exit_price") else 0
+                sl_prod = _s2p(_sl, ko, _dir, bv) if _sl else None
+            else:
+                entry_prod = ct["entry_price"]
+                exit_prod = ct.get("exit_price") or 0
+                sl_prod = _sl
+
+            _invest = entry_prod * _size
+            _wert = exit_prod * _size
+            _fees = ct.get("fees") or 0
+            _pnl_abs = _wert - _invest - _fees
+            _pnl_pct = _pnl_abs / _invest * 100 if _invest > 0 else 0
+
+            # Profit R
+            _pr = None
+            if sl_prod and entry_prod > 0:
+                _risk = abs(entry_prod - sl_prod)
+                _profit = exit_prod - entry_prod
+                _pr = round(_profit / _risk, 2) if _risk > 0 else None
+
+            # Haltedauer
+            _tage = None
+            if ct.get("entry_date") and ct.get("exit_date"):
+                try:
+                    _tage = (dt.date.fromisoformat(ct["exit_date"]) - dt.date.fromisoformat(ct["entry_date"])).days
+                except (ValueError, TypeError):
+                    pass
+
+            _ct_rows.append({
+                "trade_id": ct["id"],
+                "_exit_sort": ct.get("exit_date") or "",
+                "Verkauf": _de_date(ct.get("exit_date")),
+                "Name": ct["name"],
+                "Richtung": ct["direction"],
+                "Produkt": ct.get("isin") or ct.get("wkn") or "",
+                "Kauf": _de_date(ct["entry_date"]),
+                "Einstieg": round(entry_prod, 2),
+                "Ausstieg": round(exit_prod, 2),
+                "Invest": round(_invest, 2),
+                "Wert": round(_wert, 2),
+                "P/L %": round(_pnl_pct, 1),
+                "P/L €": round(_pnl_abs, 2),
+                "Profit R": _pr,
+                "Tage": _tage,
+                "Stück": _size,
+            })
+
+        _ct_df = pd.DataFrame(_ct_rows)
+        _ct_df = _ct_df.sort_values("_exit_sort", ascending=False).reset_index(drop=True)
+
+        _ct_display_cols = [
+            "trade_id", "_exit_sort",
+            "Verkauf", "Name", "Richtung", "Produkt", "Kauf",
+            "Stück", "Einstieg", "Ausstieg", "Invest", "Wert",
+            "P/L %", "P/L €", "Profit R", "Tage",
+        ]
+        _ct_display = _ct_df[[c for c in _ct_display_cols if c in _ct_df.columns]]
+
+        _ct_styled = _style_trades_df(_ct_display)
+        _ct_sel = st.dataframe(
+            _ct_styled,
+            hide_index=True,
+            width="stretch",
+            height=min(45 * len(_ct_df) + 50, 400),
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "trade_id": None,
+                "_exit_sort": None,
+                "Stück": st.column_config.NumberColumn("Stück", format="%d"),
+                "Einstieg": st.column_config.NumberColumn("Einstieg", format="%.2f €"),
+                "Ausstieg": st.column_config.NumberColumn("Ausstieg", format="%.2f €"),
+                "Invest": st.column_config.NumberColumn("Invest", format="%.2f €"),
+                "Wert": st.column_config.NumberColumn("Wert", format="%.2f €"),
+                "P/L %": st.column_config.NumberColumn("P/L %", format="%+.1f%%"),
+                "P/L €": st.column_config.NumberColumn("P/L €", format="%+.2f €"),
+                "Profit R": st.column_config.NumberColumn("Profit R", format="%+.2f R"),
+                "Tage": st.column_config.NumberColumn("Tage", format="%d"),
+            },
+            key="trades_closed_table",
+        )
+
+        if _ct_sel and _ct_sel.selection and _ct_sel.selection.rows:
+            _ct_idx = _ct_sel.selection.rows[0]
+            _ct_trade_id = int(_ct_df.iloc[_ct_idx]["trade_id"])
+            _prev_ct = st.session_state.get("_prev_closed_trade_sel")
+            if _prev_ct != _ct_trade_id:
+                st.session_state["_prev_closed_trade_sel"] = _ct_trade_id
+                show_trade_dialog(_ct_trade_id)
+            else:
+                st.session_state["_prev_closed_trade_sel"] = None
+                st.rerun()
+    else:
+        st.caption("Noch keine geschlossenen Trades.")
+
+
+# =========================================================================
+# PAGE: Konto (Buchungen)
+# =========================================================================
+elif st.session_state["page"] == "konto":
+    st.subheader("Konto & Buchungen")
+
+    # --- Übersicht ---
+    _ki = get_free_cash()
+    _kc1, _kc2, _kc3, _kc4 = st.columns(4)
+    _kc1.metric("Freies Cash", f"€{_ki['balance']:,.2f}")
+    _kc2.metric("In Positionen", f"€{_ki['locked_cash']:,.2f}")
+    _kc3.metric("Portfolio-Wert", f"€{_ki['portfolio_value']:,.2f}")
+    _kc4.metric("Nächster Trade (20%)", f"€{_ki['balance'] * 0.20:,.2f}")
+    st.divider()
+
+    # --- Neue Buchung ---
+    st.markdown("#### Neue Buchung")
+    _buch_c1, _buch_c2, _buch_c3, _buch_c4 = st.columns([1, 1, 2, 1])
+    with _buch_c1:
+        _buch_type = st.selectbox(
+            "Typ", ["Einzahlung", "Auszahlung", "Korrektur"],
+            key="konto_buch_type",
+        )
+    with _buch_c2:
+        if _buch_type == "Korrektur":
+            _buch_amount = st.number_input(
+                "Betrag (€)", step=50.0, value=0.0,
+                format="%.2f", key="konto_buch_amount_corr",
+                help="Positiv = Guthaben erhöhen, Negativ = Guthaben senken",
+            )
+        else:
+            _buch_amount = st.number_input(
+                "Betrag (€)", min_value=0.01, step=50.0, value=100.0,
+                format="%.2f", key="konto_buch_amount",
+            )
+    with _buch_c3:
+        _buch_desc = st.text_input(
+            "Beschreibung (optional)", key="konto_buch_desc",
+            placeholder="z.B. Überweisung von Girokonto",
+        )
+    with _buch_c4:
+        _buch_date = st.date_input("Datum", value=dt.date.today(), key="konto_buch_date")
+
+    if st.button("Buchung speichern", type="primary", key="konto_save_btn"):
+        _type_map = {
+            "Einzahlung": ("deposit", abs(_buch_amount)),
+            "Auszahlung": ("withdrawal", -abs(_buch_amount)),
+            "Korrektur": ("correction", _buch_amount),
+        }
+        _db_type, _db_amount = _type_map[_buch_type]
+        _desc = _buch_desc or _buch_type
+        add_ledger_entry(
+            date=_buch_date.isoformat(),
+            entry_type=_db_type,
+            amount=_db_amount,
+            description=_desc,
+        )
+        st.success(f"{_buch_type} über €{abs(_db_amount):,.2f} gebucht.")
+        st.rerun()
+
+    # Korrektur-Hinweis
+    if _buch_type == "Korrektur":
+        st.caption("Korrekturen: Positiver Betrag erhöht das Guthaben, negativer senkt es. "
+                   "Nutze das für Abweichungen zwischen System und echtem Kontostand.")
+
+    # --- Offene Positionen ---
+    if _ki["positions"]:
+        st.divider()
+        st.markdown("#### Offene Positionen (gebundenes Cash)")
+        _pos_df = pd.DataFrame(_ki["positions"])
+        _pos_df = _pos_df.rename(columns={
+            "ticker": "Ticker", "name": "Name", "invested": "Investiert (€)",
+            "size": "Stück", "direction": "Richtung",
+        })
+        _pos_df = _pos_df[["Ticker", "Name", "Richtung", "Stück", "Investiert (€)"]]
+        st.dataframe(_pos_df, hide_index=True, use_container_width=True)
+
+    # --- Buchungshistorie ---
+    st.divider()
+    st.markdown("#### Buchungshistorie")
+
+    _entries = get_ledger_entries(limit=200)
+    if _entries:
+        _type_labels = {
+            "deposit": "Einzahlung",
+            "withdrawal": "Auszahlung",
+            "trade_buy": "Kauf",
+            "trade_sell": "Verkauf",
+            "correction": "Korrektur",
+        }
+        _type_colors = {
+            "deposit": "#4CAF50",
+            "withdrawal": "#F44336",
+            "trade_buy": "#FF9800",
+            "trade_sell": "#2196F3",
+            "correction": "#9C27B0",
+        }
+
+        _entry_rows = []
+        _running = get_cash_balance()  # Start mit aktuellem Stand
+        # Für laufenden Saldo von oben (neuste) nach unten berechnen
+        for e in _entries:
+            _entry_rows.append({
+                "id": e["id"],
+                "Datum": e["date"],
+                "Typ": _type_labels.get(e["type"], e["type"]),
+                "Beschreibung": e.get("description") or "",
+                "Betrag": e["amount"],
+                "Saldo": _running,
+                "_type": e["type"],
+                "_trade_id": e.get("trade_id"),
+            })
+            _running -= e["amount"]  # rückwärts rechnen
+
+        _hist_df = pd.DataFrame(_entry_rows)
+
+        # Display mit farbiger Formatierung
+        for _, row in _hist_df.iterrows():
+            _color = _type_colors.get(row["_type"], "#666")
+            _sign = "+" if row["Betrag"] > 0 else ""
+            _cols = st.columns([1, 1.2, 3, 1.2, 1.2, 0.5])
+            _cols[0].markdown(f"`{row['Datum']}`")
+            _cols[1].markdown(f":{_color}[**{row['Typ']}**]")
+            _cols[2].markdown(row["Beschreibung"])
+            _cols[3].markdown(f"**{_sign}€{row['Betrag']:,.2f}**")
+            _cols[4].markdown(f"€{row['Saldo']:,.2f}")
+            # Lösch-Button nur für manuelle Einträge
+            if row["_type"] in ("deposit", "withdrawal", "correction"):
+                if _cols[5].button("X", key=f"del_ledger_{row['id']}", type="tertiary"):
+                    delete_ledger_entry(row["id"])
+                    st.rerun()
+    else:
+        st.info("Noch keine Buchungen. Buche deine erste Einzahlung oben.")
+
+    # --- Saldo-Verlauf Chart ---
+    if _entries and len(_entries) > 1:
+        st.divider()
+        st.markdown("#### Saldo-Verlauf")
+        # Chronologisch sortieren für Chart
+        _chrono = sorted(_entries, key=lambda x: (x["date"], x["id"]))
+        _saldo = 0.0
+        _chart_data = []
+        for e in _chrono:
+            _saldo += e["amount"]
+            _chart_data.append({
+                "Datum": pd.Timestamp(e["date"]),
+                "Saldo": _saldo,
+            })
+        _chart_df = pd.DataFrame(_chart_data)
+        st.line_chart(_chart_df, x="Datum", y="Saldo", use_container_width=True)
+
+
+# =========================================================================
+# PAGE: Signal-Historie
+# =========================================================================
+elif st.session_state["page"] == "history":
+    st.subheader("Signal-Historie")
+
+    hist_col1, hist_col2 = st.columns(2)
+    with hist_col1:
+        hist_date = st.date_input("Datum", value=dt.date.today())
+    with hist_col2:
+        hist_dir = st.selectbox("Richtung", ["Alle", "LONG", "SHORT", "NEUTRAL"])
+
+    direction_filter = None if hist_dir == "Alle" else hist_dir
+    signals = get_signals(date=hist_date.isoformat(), direction=direction_filter)
+
+    if signals:
+        sig_df = pd.DataFrame(signals)
+        display_cols = ["date", "ticker", "name", "direction", "pattern", "score",
+                        "entry", "target", "stop_loss", "risk_reward"]
+        available = [c for c in display_cols if c in sig_df.columns]
+        st.dataframe(
+            sig_df[available].rename(columns={
+                "date": "Datum", "ticker": "Ticker", "name": "Name",
+                "direction": "Richtung", "pattern": "Pattern", "score": "Score",
+                "entry": "Entry", "target": "Ziel", "stop_loss": "Stop-Loss",
+                "risk_reward": "R/R",
+            }),
+            width="stretch", hide_index=True,
+        )
+    else:
+        st.info(f"Keine Signale für {hist_date.strftime('%d.%m.%Y')} gefunden.")
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE: Wiki
+# ═══════════════════════════════════════════════════════════════════════════
+elif st.session_state["page"] == "wiki":
+    import glob as _glob
+    from pathlib import Path as _Path
+
+    _wiki_dir = _Path(__file__).parent / "wiki"
+    _wiki_dir.mkdir(exist_ok=True)
+
+    st.header("Wiki")
+    st.caption("Wissenssammlung zum Trading-System — Regeln, Prozesse, Erkenntnisse")
+
+    # Alle .md Dateien laden
+    _wiki_files = sorted(_wiki_dir.glob("*.md"))
+
+    if not _wiki_files:
+        st.info("Noch keine Wiki-Seiten vorhanden.")
+    else:
+        # Seitenauswahl
+        _wiki_titles = []
+        for _wf in _wiki_files:
+            _first_line = _wf.read_text(encoding="utf-8").split("\n")[0]
+            _title = _first_line.lstrip("# ").strip() if _first_line.startswith("#") else _wf.stem
+            _wiki_titles.append(_title)
+
+        _wiki_tab_objects = st.tabs(_wiki_titles)
+
+        for _wi, (_wf, _wtab) in enumerate(zip(_wiki_files, _wiki_tab_objects)):
+            with _wtab:
+                _wiki_content = _wf.read_text(encoding="utf-8")
+
+                # Edit-Modus
+                _edit_key = f"wiki_edit_{_wf.stem}"
+                if _edit_key not in st.session_state:
+                    st.session_state[_edit_key] = False
+
+                _wcol1, _wcol2 = st.columns([8, 2])
+                with _wcol2:
+                    if st.session_state[_edit_key]:
+                        if st.button("Speichern", key=f"wiki_save_{_wi}", type="primary"):
+                            _new_content = st.session_state.get(f"wiki_editor_{_wi}", _wiki_content)
+                            _wf.write_text(_new_content, encoding="utf-8")
+                            st.session_state[_edit_key] = False
+                            st.rerun()
+                        if st.button("Abbrechen", key=f"wiki_cancel_{_wi}"):
+                            st.session_state[_edit_key] = False
+                            st.rerun()
+                    else:
+                        if st.button("Bearbeiten", key=f"wiki_editbtn_{_wi}"):
+                            st.session_state[_edit_key] = True
+                            st.rerun()
+
+                if st.session_state[_edit_key]:
+                    st.text_area(
+                        "Markdown bearbeiten",
+                        value=_wiki_content,
+                        height=500,
+                        key=f"wiki_editor_{_wi}",
+                        label_visibility="collapsed",
+                    )
+                else:
+                    st.markdown(_wiki_content)
+
+    # Neue Seite erstellen
+    st.divider()
+    with st.expander("Neue Wiki-Seite erstellen"):
+        _new_wiki_name = st.text_input("Dateiname (ohne .md)", key="wiki_new_name",
+                                        placeholder="z.B. 05_mein_thema")
+        _new_wiki_title = st.text_input("Seitentitel", key="wiki_new_title",
+                                         placeholder="z.B. Mein neues Thema")
+        if st.button("Seite erstellen", key="wiki_create_btn"):
+            if _new_wiki_name and _new_wiki_title:
+                _new_path = _wiki_dir / f"{_new_wiki_name}.md"
+                if _new_path.exists():
+                    st.error("Datei existiert bereits!")
+                else:
+                    _new_path.write_text(f"# {_new_wiki_title}\n\nInhalt hier einfügen...\n",
+                                          encoding="utf-8")
+                    st.success(f"Seite '{_new_wiki_title}' erstellt!")
+                    st.rerun()
+            else:
+                st.warning("Bitte Dateiname und Titel angeben.")
+
+# ---------------------------------------------------------------------------
+st.divider()
+st.caption(
+    "⚠️ Dies ist keine Finanzberatung. Nur zu Bildungszwecken. "
+    "Vergangene Performance ist kein Indikator für zukünftige Ergebnisse."
+)

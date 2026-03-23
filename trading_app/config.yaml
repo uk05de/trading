@@ -1,0 +1,23 @@
+name: "Trading App"
+description: "Swing-Trading System mit Pattern-Erkennung"
+version: "1.0.0"
+slug: "trading_app"
+url: "https://github.com/user/trading"
+arch:
+  - amd64
+  - aarch64
+init: false
+homeassistant_api: true
+ingress: true
+ingress_port: 8501
+panel_icon: "mdi:chart-line"
+panel_title: "Trading"
+ports:
+  8501/tcp: null
+map:
+  - addon_config:rw
+  - share:rw
+options:
+  scan_interval_minutes: 30
+schema:
+  scan_interval_minutes: int

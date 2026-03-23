@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data (DB ist zu gross fuer Git, wird lokal erzeugt)
+data/trading.db
+data/trading_backup_*.db
+data/*.pkl
+trading_app/data/trading.db
+trading_app/data/*.pkl
+
+# IDE
+.idea/
+.DS_Store
+*.swp
+
+# Backtest Results (lokal, nicht versioniert)
+results/
+
+# Archive/Backup (alt, nicht versioniert)
+archive/
+backup/
+
+# macOS Cron
+*.plist
+
+# Test Files
+test_*.py
+
+# Streamlit Cache (nur root, nicht trading_app)
+.streamlit/
+!trading_app/.streamlit/
+
+# Claude
+.claude/
