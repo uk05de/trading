@@ -14,19 +14,18 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-# App-Code kopieren
+# App-Code kopieren (Build-Context = trading_app/)
 COPY . .
 
-# Streamlit Config (kein Browser oeffnen, Ingress-kompatibel)
-RUN mkdir -p /root/.streamlit
-COPY ha-addon/.streamlit/config.toml /root/.streamlit/config.toml
+# Streamlit Config
+RUN mkdir -p /root/.streamlit && \
+    cp /app/.streamlit/config.toml /root/.streamlit/config.toml
 
-# Daten-Verzeichnis (persistent via HA config map)
-RUN mkdir -p /data
+# Daten-Verzeichnis (persistent via HA addon_config)
+RUN mkdir -p /data /app/data
 ENV TRADING_DB_PATH=/data/trading.db
 
 # Entrypoint
-COPY ha-addon/run.sh /run.sh
-RUN chmod +x /run.sh
+RUN chmod +x /app/run.sh
 
-CMD ["/run.sh"]
+CMD ["/app/run.sh"]
