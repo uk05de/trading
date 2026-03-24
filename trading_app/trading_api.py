@@ -163,18 +163,8 @@ def _setup_ha_automations():
         log.warning("HA API nicht erreichbar: %s", e)
         return
 
-    # Notification Service finden (erster mobile_app Service)
-    notify_service = "notify.notify"  # Fallback
-    try:
-        resp = req.get(f"{ha_url}/services", headers=headers, timeout=5)
-        for svc in resp.json():
-            if svc["domain"] == "notify":
-                for s in svc.get("services", {}):
-                    if "mobile_app" in s:
-                        notify_service = f"notify.{s}"
-                        break
-    except Exception:
-        pass
+    # Notification Service
+    notify_service = "notify.mobile_app_iphone_robert_arndt"
 
     automations = [
         {
