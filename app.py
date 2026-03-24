@@ -303,6 +303,14 @@ st.markdown("""
 
         /* Tabellen kompakter */
         .stDataFrame { font-size: 0.75rem; }
+
+        /* Sektor-Kacheln: 3 pro Zeile auf Mobile */
+        .sector-tile {
+            flex: 1 1 calc(33.3% - 6px) !important;
+            min-width: 60px !important;
+            font-size: 0.85em;
+        }
+        .sector-tile > div:last-child { font-size: 1.1em !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1348,7 +1356,8 @@ def page_empfehlungen():
         # --- Sector tiles (colored HTML, visual overview) ---
         _sector_scores = compute_sector_scores()
         if _sector_scores:
-            _idx_tiles = [(n, d) for n, d in _sector_scores.items() if d.get("is_index")]
+            _idx_tiles = [(n, d) for n, d in _sector_scores.items()
+                          if d.get("is_index") and "Dow" not in n and "Nasdaq" not in n]
             _sec_tiles = [(n, d) for n, d in _sector_scores.items() if not d.get("is_index")]
             _idx_tiles.sort(key=lambda x: x[1]["score"], reverse=True)
             _sec_tiles.sort(key=lambda x: x[1]["score"], reverse=True)
@@ -1373,9 +1382,9 @@ def page_empfehlungen():
                     _n = data["n_tickers"]
                     _tt = f"{_n} Titel · " if _n > 1 else ""
                     html += (
-                        f'<div style="background:{_bg}; border-radius:8px; padding:8px 10px; '
+                        f'<div class="sector-tile" style="background:{_bg}; border-radius:8px; padding:8px 10px; '
                         f'text-align:center; border:1px solid #555; '
-                        f'flex:1 1 calc(20% - 6px); min-width:120px; max-width:calc(20% - 6px);" '
+                        f'flex:1 1 calc(20% - 6px); min-width:80px;" '
                         f'title="{_tt}5d: {data["avg_5d"]:+.1f}% · 14d: {data["avg_14d"]:+.1f}%">'
                         f'<div style="font-size:0.75em; color:#ccc;">{_label}</div>'
                         f'<div style="font-size:1.3em; font-weight:bold;">{data["arrow"]} {_score:+.0f}</div>'
