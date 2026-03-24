@@ -301,94 +301,74 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-_title_col, _btn_refresh, _btn_ai, _btn_col = st.columns([5, 1, 1, 1])
-with _title_col:
-    st.title("Robski's Super Trader")
-with _btn_refresh:
-    st.write("")  # Spacer
-    _do_refresh = st.button("Trades aktualisieren", width="stretch")
-with _btn_ai:
-    st.write("")  # Spacer
-    _do_ai_batch = st.button("KI-Bewertung", width="stretch",
-                             help="KI-Bewertung für Top-Signale (|Score| >= 40)")
-with _btn_col:
-    st.write("")  # Spacer
-    rescan = st.button("Alles aktualisieren", type="primary", width="stretch")
-    if rescan:
-        st.cache_data.clear()
-        st.session_state["run_scan"] = True
+
+# ---------------------------------------------------------------------------
+# Shared Header (wird von Seiten aufgerufen die Scan-Buttons brauchen)
+# ---------------------------------------------------------------------------
+def _render_header():
+    """Header mit Titel und Scan-Buttons — nur auf Empfehlungen-Seite."""
+    _title_col, _btn_refresh, _btn_ai, _btn_col = st.columns([5, 1, 1, 1])
+    with _title_col:
+        st.title("Robski's Super Trader")
+    with _btn_refresh:
+        st.write("")
+        _do_refresh = st.button("Trades aktualisieren", width="stretch")
+    with _btn_ai:
+        st.write("")
+        _do_ai_batch = st.button("KI-Bewertung", width="stretch",
+                                 help="KI-Bewertung für Top-Signale (|Score| >= 40)")
+    with _btn_col:
+        st.write("")
+        rescan = st.button("Alles aktualisieren", type="primary", width="stretch")
+        if rescan:
+            st.cache_data.clear()
+            st.session_state["run_scan"] = True
     _data_info_placeholder = st.empty()
 
-# ---------------------------------------------------------------------------
-# Kurse aktualisieren: Yahoo + Indikatoren + Analyse + Targets + Produkt-Bid
-# ---------------------------------------------------------------------------
-if _do_refresh:
-    clear_price_cache()
-    import scanner as _scanner_mod
-    _refresh_bar = st.progress(0, text="Trades aktualisieren ...")
-    _scanner_mod.progress_callback = lambda d, t, txt: _refresh_bar.progress(d / t, text=f"Trades: {txt}")
-    _n_updated = refresh_open_trades()
-    _scanner_mod.progress_callback = None
-    _refresh_bar.empty()
-    if _n_updated:
-        st.session_state["_refresh_msg"] = (
-            f"{_n_updated} Trade(s) aktualisiert — {dt.datetime.now().strftime('%H:%M:%S Uhr')}")
-    else:
-        st.session_state["_refresh_msg"] = "warn:Keine offenen Trades gefunden."
-    st.rerun()
-
-_refresh_msg = st.session_state.pop("_refresh_msg", None)
-if _refresh_msg:
-    if _refresh_msg.startswith("warn:"):
-        _data_info_placeholder.warning(_refresh_msg[5:])
-    else:
-        _data_info_placeholder.caption(_refresh_msg)
-
-# ---------------------------------------------------------------------------
-# KI-Bewertung für Top-Signale
-# ---------------------------------------------------------------------------
-if _do_ai_batch:
-    _sr = st.session_state.get("scan_results")
-    if _sr is not None and not _sr.empty:
-        _n_cand = (_sr["Score"].abs() >= 40).sum()
-        if _n_cand > 0:
-            _ai_progress = st.progress(0, text=f"KI-Bewertung: 0/{_n_cand} ...")
-            def _ai_cb(done, total):
-                _ai_progress.progress(done / total, text=f"KI-Bewertung: {done}/{total} ...")
-            _sr = run_ai_for_top_signals(_sr, threshold=40.0, progress_callback=_ai_cb)
-            _ai_progress.empty()
-            st.session_state["scan_results"] = _sr
-            _n_k = (_sr["Konsens"] == "\u2605\u2605\u2605").sum() if "Konsens" in _sr.columns else 0
-            _n_w = (_sr["Konsens"] == "\u26a0").sum() if "Konsens" in _sr.columns else 0
+    if _do_refresh:
+        clear_price_cache()
+        import scanner as _scanner_mod
+        _refresh_bar = st.progress(0, text="Trades aktualisieren ...")
+        _scanner_mod.progress_callback = lambda d, t, txt: _refresh_bar.progress(d / t, text=f"Trades: {txt}")
+        _n_updated = refresh_open_trades()
+        _scanner_mod.progress_callback = None
+        _refresh_bar.empty()
+        if _n_updated:
             st.session_state["_refresh_msg"] = (
-                f"KI-Bewertung: {_n_cand} bewertet, {_n_k} Konsens, {_n_w} Widerspruch")
+                f"{_n_updated} Trade(s) aktualisiert — {dt.datetime.now().strftime('%H:%M:%S Uhr')}")
         else:
-            st.session_state["_refresh_msg"] = "warn:Keine Signale mit |Score| >= 40 vorhanden."
-    else:
-        st.session_state["_refresh_msg"] = "warn:Keine Scan-Ergebnisse. Bitte zuerst Scan starten."
-    st.rerun()
-
-# ---------------------------------------------------------------------------
-# Session-state navigation
-# ---------------------------------------------------------------------------
-if "page" not in st.session_state:
-    st.session_state["page"] = "top"
-
-_nav_items = [
-    ("top", "Empfehlungen"),
-    ("trades", "Meine Trades"),
-    ("konto", "Konto"),
-    ("history", "Signal-Historie"),
-    ("wiki", "Wiki"),
-]
-_nav_cols = st.columns(len(_nav_items))
-for i, (key, label) in enumerate(_nav_items):
-    _type = "primary" if st.session_state["page"] == key else "secondary"
-    if _nav_cols[i].button(label, type=_type, use_container_width=True, key=f"nav_{key}"):
-        st.session_state["page"] = key
+            st.session_state["_refresh_msg"] = "warn:Keine offenen Trades gefunden."
         st.rerun()
 
-st.divider()
+    _refresh_msg = st.session_state.pop("_refresh_msg", None)
+    if _refresh_msg:
+        if _refresh_msg.startswith("warn:"):
+            _data_info_placeholder.warning(_refresh_msg[5:])
+        else:
+            _data_info_placeholder.caption(_refresh_msg)
+
+    if _do_ai_batch:
+        _sr = st.session_state.get("scan_results")
+        if _sr is not None and not _sr.empty:
+            _n_cand = (_sr["Score"].abs() >= 40).sum()
+            if _n_cand > 0:
+                _ai_progress = st.progress(0, text=f"KI-Bewertung: 0/{_n_cand} ...")
+                def _ai_cb(done, total):
+                    _ai_progress.progress(done / total, text=f"KI-Bewertung: {done}/{total} ...")
+                _sr = run_ai_for_top_signals(_sr, threshold=40.0, progress_callback=_ai_cb)
+                _ai_progress.empty()
+                st.session_state["scan_results"] = _sr
+                _n_k = (_sr["Konsens"] == "\u2605\u2605\u2605").sum() if "Konsens" in _sr.columns else 0
+                _n_w = (_sr["Konsens"] == "\u26a0").sum() if "Konsens" in _sr.columns else 0
+                st.session_state["_refresh_msg"] = (
+                    f"KI-Bewertung: {_n_cand} bewertet, {_n_k} Konsens, {_n_w} Widerspruch")
+            else:
+                st.session_state["_refresh_msg"] = "warn:Keine Signale mit |Score| >= 40 vorhanden."
+        else:
+            st.session_state["_refresh_msg"] = "warn:Keine Scan-Ergebnisse. Bitte zuerst Scan starten."
+        st.rerun()
+
+    return _data_info_placeholder
 
 # ---------------------------------------------------------------------------
 # Style helpers (module level)
@@ -1213,7 +1193,9 @@ def show_signal_dialog(ticker: str):
 # =========================================================================
 # PAGE: Empfehlungen (top)
 # =========================================================================
-if st.session_state["page"] == "top":
+def page_empfehlungen():
+    _data_info_placeholder = _render_header()
+
     # Only scan when explicitly requested; otherwise load from DB
     results_df = pd.DataFrame()
     active_trades_df = pd.DataFrame()
@@ -1319,7 +1301,7 @@ if st.session_state["page"] == "top":
 
     if results_df.empty:
         st.warning("Keine Daten vorhanden. Bitte zuerst einen Scan starten.")
-        st.stop()
+        return
 
     # ── Konsens-Spalten aus DB ergänzen wenn sie fehlen ──
     if "Konsens" not in results_df.columns and not results_df.empty:
@@ -1435,102 +1417,30 @@ if st.session_state["page"] == "top":
 
         st.divider()
 
-        st.divider()
-
-        n_long = (results_df["Richtung"] == "LONG").sum()
-        n_short = (results_df["Richtung"] == "SHORT").sum()
-        avg_score = results_df["Score"].mean()
-
-        _stored_failed = st.session_state.get("_failed_tickers", [])
-        _n_failed = len(_stored_failed)
-        _n_total = len(results_df) + _n_failed
-        _scan_label = f"{len(results_df)} / {_n_total}" if _n_failed else f"{len(results_df)}"
-
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Gescannt", _scan_label)
-        s2.metric("LONG", n_long)
-        s3.metric("SHORT", n_short)
-        s4.metric("Ø Score", f"{avg_score:+.1f}")
-
         # --- Filter ---
         # Collect available sectors + indices for multiselect options
         _avail_sectors = sorted(results_df["Sparte"].dropna().unique()) if "Sparte" in results_df.columns else []
         _avail_indices = sorted(results_df["Index"].dropna().unique()) if "Index" in results_df.columns else []
 
-        filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
+        filter_col1, filter_col2 = st.columns(2)
         with filter_col1:
-            dir_filter = st.multiselect(
-                "Richtung", ["LONG", "SHORT"],
-                default=["LONG", "SHORT"],
-                key="flt_dir",
-            )
-        with filter_col2:
             sector_filter = st.multiselect(
                 "Sparte", _avail_sectors, default=[],
                 placeholder="Alle Sparten",
                 key="flt_sector",
             )
-        with filter_col3:
+        with filter_col2:
             min_score = st.number_input("Min. Score", value=0, min_value=0,
                                         max_value=100, step=5, key="flt_score")
-        with filter_col4:
-            min_rr = st.number_input("Min. R/R", value=1.5, min_value=0.0,
-                                     max_value=10.0, step=0.1, format="%.1f",
-                                     key="flt_rr")
-        with filter_col5:
-            min_gain = st.number_input("Min. Gewinn %", value=0.0, min_value=0.0,
-                                       max_value=50.0, step=1.0, format="%.1f",
-                                       key="flt_gain")
-
-        # --- Einzelne Ticker neu berechnen ---
-        _rc1, _rc2 = st.columns([3, 1])
-        with _rc1:
-            _rescan_input = st.text_input(
-                "Ticker neu berechnen",
-                placeholder="z.B. XEL, S92.DE",
-                label_visibility="collapsed",
-            )
-        with _rc2:
-            _rescan_btn = st.button("Neu berechnen", type="tertiary", key="rescan_single")
-        if _rescan_btn and _rescan_input:
-            _rescan_tickers = [t.strip().upper() for t in _rescan_input.split(",") if t.strip()]
-            if _rescan_tickers:
-                with st.spinner(f"Berechne {', '.join(_rescan_tickers)} neu …"):
-                    _new_sigs, _still_fail = retry_failed(_rescan_tickers)
-                if _new_sigs:
-                    _new_df = pd.DataFrame(_new_sigs)
-                    # Bestehende Zeilen ersetzen, neue anhängen
-                    _existing = results_df[~results_df["Ticker"].isin(_new_df["Ticker"])]
-                    results_df = pd.concat([_existing, _new_df], ignore_index=True)
-                    st.session_state["scan_results"] = results_df
-                if _still_fail:
-                    st.toast(f"Fehlgeschlagen: {', '.join(_still_fail)}", icon="⚠️")
-                st.cache_data.clear()
-                st.rerun()
-
-        # Gewinn % vor dem Filtern berechnen (auf Kopie, nicht session state mutieren)
-        def _calc_gain(row):
-            entry = row.get("Entry")
-            ziel = row.get("Ziel")
-            if not entry or not ziel or pd.isna(entry) or pd.isna(ziel) or entry == 0:
-                return None
-            if row.get("Richtung") == "SHORT":
-                return (entry - ziel) / entry * 100
-            return (ziel - entry) / entry * 100
 
         _df = results_df.copy()
-        _df["Gewinn %"] = _df.apply(_calc_gain, axis=1)
 
         # Sortierung nach Combo-Score (absteigend)
         # Score kommt direkt aus dem Scanner (ADX + SL-Dist)
 
-        _mask = _df["Richtung"].isin(dir_filter) & (_df["Score"].abs() >= min_score)
+        _mask = (_df["Score"].abs() >= min_score)
         if sector_filter and "Sparte" in _df.columns:
             _mask = _mask & _df["Sparte"].isin(sector_filter)
-        if min_rr > 0 and "R/R" in _df.columns:
-            _mask = _mask & (_df["R/R"].fillna(0) >= min_rr)
-        if min_gain > 0:
-            _mask = _mask & (_df["Gewinn %"].fillna(0) >= min_gain)
         filtered = _df[_mask].copy()
 
         # Nach Score sortieren (beste zuerst)
@@ -1543,7 +1453,7 @@ if st.session_state["page"] == "top":
         else:
             display_cols = [
                 "Ticker", "Name", "Index", "Pattern", "Richtung",
-                "Entry", "Stop-Loss", "Ziel", "R/R", "SL-Dist%",
+                "Entry", "Stop-Loss", "Ziel", "SL-Dist%",
                 "Score", "ADX", "RSI", "ATR%",
             ]
             display = filtered[[c for c in display_cols if c in filtered.columns]].copy()
@@ -1667,7 +1577,7 @@ if st.session_state["page"] == "top":
 # =========================================================================
 # PAGE: Meine Trades
 # =========================================================================
-elif st.session_state["page"] == "trades":
+def page_trades():
     st.subheader("Meine Trades")
 
     # --- Cash-Übersicht ---
@@ -2121,7 +2031,7 @@ elif st.session_state["page"] == "trades":
 # =========================================================================
 # PAGE: Konto (Buchungen)
 # =========================================================================
-elif st.session_state["page"] == "konto":
+def page_konto():
     st.subheader("Konto & Buchungen")
 
     # --- Übersicht ---
@@ -2273,7 +2183,7 @@ elif st.session_state["page"] == "konto":
 # =========================================================================
 # PAGE: Signal-Historie
 # =========================================================================
-elif st.session_state["page"] == "history":
+def page_historie():
     st.subheader("Signal-Historie")
 
     hist_col1, hist_col2 = st.columns(2)
@@ -2308,7 +2218,7 @@ elif st.session_state["page"] == "history":
 # ═══════════════════════════════════════════════════════════════════════════
 # PAGE: Wiki
 # ═══════════════════════════════════════════════════════════════════════════
-elif st.session_state["page"] == "wiki":
+def page_wiki():
     import glob as _glob
     from pathlib import Path as _Path
 
@@ -2388,6 +2298,18 @@ elif st.session_state["page"] == "wiki":
                     st.rerun()
             else:
                 st.warning("Bitte Dateiname und Titel angeben.")
+
+# =========================================================================
+# Navigation Setup + Run
+# =========================================================================
+pg = st.navigation([
+    st.Page(page_empfehlungen, title="Empfehlungen", icon="📊", default=True),
+    st.Page(page_trades, title="Trades", icon="💼"),
+    st.Page(page_konto, title="Konto", icon="🏦"),
+    st.Page(page_historie, title="Historie", icon="📜"),
+    st.Page(page_wiki, title="Wiki", icon="📖"),
+])
+pg.run()
 
 # ---------------------------------------------------------------------------
 st.divider()
