@@ -60,18 +60,40 @@ def clear_price_cache():
 # KO-Zertifikat Suche
 # ---------------------------------------------------------------------------
 
-def _get_underlying_name(ticker: str) -> str:
-    """Ticker → onvista URL-Name fuer den Referrer (z.B. SAP.DE → SAP)."""
-    # .DE/.F Suffix entfernen
-    clean = ticker.split(".")[0]
-    # Mapping fuer bekannte Ticker die anders heissen
-    name_map = {
-        "1COV": "Covestro", "VOW3": "Volkswagen-VZ",
-        "MBG": "Mercedes-Benz-Group", "DHL": "DHL-Group",
-        "EOAN": "E-ON", "SY1": "Symrise", "HEN3": "Henkel-VZ",
-        "PAH3": "Porsche-Automobil-Holding-VZ",
-    }
-    return name_map.get(clean, clean)
+def _get_underlying_entity(ticker: str) -> tuple[str, str]:
+    """Ticker → (onvista entityValue, URL-Name) fuer die Suche.
+
+    Fragt die onvista Search API ab um die Entity-ID zu finden.
+    Returns: (entity_value, url_name) oder (None, ticker)
+    """
+    # ISIN-Mapping fuer bekannte deutsche Ticker
+    from markets import DAX_COMPONENTS, TECDAX_COMPONENTS, MDAX_COMPONENTS
+    _all = {**DAX_COMPONENTS, **TECDAX_COMPONENTS, **MDAX_COMPONENTS}
+    _name = _all.get(ticker, ticker.split(".")[0])
+
+    try:
+        url = f"{ONVISTA_BASE}/instruments/search/facet?searchValue={urllib.parse.quote(_name)}&perType=5"
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+
+        for facet in data.get("facets", []):
+            for result in facet.get("results", []):
+                if result.get("entityType") == "STOCK":
+                    _isin = result.get("isin", "")
+                    # Match über Ticker-Symbol oder ISIN-Prefix
+                    _sym = result.get("symbol", "")
+                    _ev = result.get("entityValue", "")
+                    _url_name = result.get("urlName", result.get("name", ""))
+                    # Prüfe ob es der richtige Ticker ist
+                    if _sym == ticker.split(".")[0] or ticker.startswith(_isin[:2] if _isin else "XX"):
+                        return _ev, _url_name
+                    # Fallback: erster STOCK Treffer
+                    return _ev, _url_name
+    except Exception as e:
+        log.warning("Underlying-Suche fehlgeschlagen fuer %s: %s", ticker, e)
+
+    return None, ticker.split(".")[0]
 
 
 def search_ko(ticker: str, entry: float, stop_loss: float,
@@ -106,6 +128,9 @@ def search_ko(ticker: str, entry: float, stop_loss: float,
         ko_min = stop_loss * (1 + ko_buffer_pct / 100)
         exercise_right = 1  # PUT
 
+    # Underlying Entity-ID finden (fuer korrekte Filterung)
+    _entity_value, _url_name = _get_underlying_entity(ticker)
+
     # Query-Parameter zusammenbauen
     query_params = (
         f"entitySubType=KNOCKOUT_CERTIFICATE"
@@ -115,13 +140,12 @@ def search_ko(ticker: str, entry: float, stop_loss: float,
         f"&knockOutAbsRange={ko_min:.1f};{ko_max:.1f}"
     )
 
-    ul_name = _get_underlying_name(ticker)
-    referrer = f"/derivate/Knock-Outs/Knock-Outs-auf-{ul_name}"
+    referrer = f"/derivate/Knock-Outs/Knock-Outs-auf-{_url_name}"
 
     url = (
         f"{ONVISTA_BASE}/derivatives/finder/configuration_query"
         f"?application=WEBSITE&device=DESKTOP"
-        f"&page=0&perPage={max_results}"
+        f"&page=0&perPage={max_results * 3}"  # Mehr laden, dann nach Underlying filtern
         f"&queryParameters={urllib.parse.quote(query_params)}"
         f"&referrer={urllib.parse.quote(referrer)}"
     )
@@ -139,6 +163,11 @@ def search_ko(ticker: str, entry: float, stop_loss: float,
         instr = item.get("instrument", {})
         quote = item.get("quote", {})
         issuer = item.get("issuer", {})
+        ul_instr = item.get("instrumentUnderlying", {})
+
+        # Nach Underlying filtern (falls Entity-ID bekannt)
+        if _entity_value and ul_instr.get("entityValue") != _entity_value:
+            continue
 
         ko_level = item.get("knockOutAbs")
         bid = quote.get("bid")
@@ -159,6 +188,7 @@ def search_ko(ticker: str, entry: float, stop_loss: float,
             "isin": instr.get("isin"),
             "wkn": instr.get("wkn"),
             "name": item.get("shortName", instr.get("name", "")),
+            "underlying": ul_instr.get("name", ""),
             "emittent": issuer.get("name", ""),
             "ko_level": round(ko_level, 2),
             "bid": bid,

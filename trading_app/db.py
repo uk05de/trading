@@ -32,56 +32,10 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db():
-    """DB initialisieren — Tabellen erstellen wenn noetig."""
+    """Verbindung zur DB testen. Schema wird extern verwaltet."""
     conn = _connect()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS signals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL,
-        ticker TEXT NOT NULL, name TEXT, direction TEXT NOT NULL,
-        pattern TEXT, entry REAL NOT NULL, target REAL, stop_loss REAL,
-        risk_reward REAL DEFAULT 2.0, sl_dist_pct REAL, score REAL,
-        adx REAL, rsi REAL, atr_pct REAL, detail TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(date, ticker, pattern)
-    );
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id INTEGER,
-        ticker TEXT NOT NULL, name TEXT, direction TEXT NOT NULL,
-        entry_date TEXT NOT NULL, entry_price REAL NOT NULL, size REAL,
-        target REAL, stop_loss REAL, isin TEXT, wkn TEXT, ko_level REAL,
-        bv REAL DEFAULT 1.0, emittent TEXT, current_price REAL,
-        product_bid REAL, exit_date TEXT, exit_price REAL,
-        entry_fees REAL DEFAULT 1.0, fees REAL DEFAULT 0,
-        status TEXT DEFAULT 'OPEN', return_pct REAL, return_abs REAL,
-        post_exit_5d_pct REAL, post_exit_10d_pct REAL,
-        post_exit_20d_pct REAL, post_exit_max_pct REAL,
-        max_r_during REAL, min_r_during REAL,
-        notes TEXT, is_test INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (signal_id) REFERENCES signals(id)
-    );
-    CREATE TABLE IF NOT EXISTS ai_assessments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL,
-        ticker TEXT NOT NULL, direction TEXT NOT NULL, score REAL,
-        entry REAL, target REAL, stop_loss REAL, risk_reward REAL,
-        reasoning TEXT, prompt TEXT, model TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS prices (
-        ticker TEXT NOT NULL, date TEXT NOT NULL,
-        open REAL, high REAL, low REAL, close REAL, volume REAL,
-        PRIMARY KEY (ticker, date)
-    );
-    CREATE TABLE IF NOT EXISTS cash_ledger (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL,
-        type TEXT NOT NULL, amount REAL NOT NULL, description TEXT,
-        trade_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (trade_id) REFERENCES trades(id)
-    );
-    CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
-    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    """)
-    conn.commit()
+    # Kurzer Verbindungstest
+    conn.execute("SELECT 1")
     conn.close()
 
 
