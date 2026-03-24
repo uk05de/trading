@@ -1033,23 +1033,28 @@ def show_signal_dialog(ticker: str):
                         _m6.metric("Knock-Out", f"{selected['ko_level']:.2f} €")
                         _size = _ps["size"]
 
-                    # Formular
+                    # Formular — Defaults setzen bevor das Form rendert
+                    _kp_key = f"dlg_tf_kp_{form_key}"
+                    _sz_key = f"dlg_tf_sz_{form_key}"
+                    if _kp_key not in st.session_state:
+                        st.session_state[_kp_key] = float(_bid) if _bid else 0.0
+                    if _sz_key not in st.session_state:
+                        st.session_state[_sz_key] = float(_size) if _size > 0 else 1.0
+
                     st.divider()
                     with st.form(f"dlg_sig_trade_{form_key}", clear_on_submit=True):
                         _fc1, _fc2, _fc3 = st.columns(3)
                         with _fc1:
                             trade_kaufpreis = st.number_input(
                                 "Kaufpreis (Produkt)",
-                                value=float(_bid) if _bid else 0.0,
                                 min_value=0.0, step=0.01, format="%.2f",
-                                key=f"dlg_tf_kp_{form_key}",
+                                key=_kp_key,
                             )
                         with _fc2:
                             trade_stueck = st.number_input(
                                 "Stück",
-                                value=float(_size) if _size > 0 else 1.0,
                                 min_value=1.0, step=1.0, format="%.0f",
-                                key=f"dlg_tf_sz_{form_key}",
+                                key=_sz_key,
                             )
                         with _fc3:
                             trade_entry_date = st.date_input(
