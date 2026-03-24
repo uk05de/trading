@@ -1065,12 +1065,16 @@ def show_signal_dialog(ticker: str):
                         submitted = st.form_submit_button(
                             "Trade eröffnen", type="primary", use_container_width=True)
                         if submitted and trade_kaufpreis > 0:
+                            # Basiswert-Kurs aus tatsächlichem Kaufpreis rückrechnen
+                            from ko_calc import product_to_stock
+                            _actual_entry_stock = product_to_stock(
+                                trade_kaufpreis, _ko_level, _sig_dir, _bv)
                             _trade_id = open_trade({
                                 "signal_id": base_sig.get("id"),
                                 "ticker": ticker, "name": name,
                                 "direction": _sig_dir,
                                 "entry_date": trade_entry_date.isoformat(),
-                                "entry_price": _sig_price,
+                                "entry_price": _actual_entry_stock,
                                 "size": int(trade_stueck),
                                 "target": _sig_tgt, "stop_loss": _sig_sl,
                                 "isin": selected["isin"],
@@ -1079,7 +1083,7 @@ def show_signal_dialog(ticker: str):
                                 "emittent": selected["emittent"],
                                 "entry_fees": 1.0,
                                 "is_test": int(trade_is_test),
-                                "current_price": _sig_price,
+                                "current_price": _actual_entry_stock,
                                 "product_bid": trade_kaufpreis,
                             })
                             if _trade_id:
