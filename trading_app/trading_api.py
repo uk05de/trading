@@ -163,8 +163,15 @@ def _setup_ha_automations():
         log.warning("HA API nicht erreichbar: %s", e)
         return
 
-    # Notification Service
-    notify_service = "notify.mobile_app_iphone_robert_arndt"
+    # Notification Service aus Add-on Config lesen
+    notify_service = "notify.notify"  # Fallback
+    try:
+        with open("/data/options.json") as f:
+            options = json.load(f)
+            notify_service = options.get("notify_service", notify_service)
+    except FileNotFoundError:
+        log.info("Keine options.json — nutze Fallback Notify-Service")
+    log.info("Notify-Service: %s", notify_service)
 
     automations = [
         {
