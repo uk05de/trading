@@ -146,6 +146,14 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
             n_tickers = conn.execute("SELECT COUNT(DISTINCT ticker) FROM prices").fetchone()[0]
             latest = conn.execute("SELECT MAX(date) FROM prices").fetchone()[0]
             conn.close()
+            # Prüfe ob DB-Ticker in SECTOR_MAP matchen
+            from markets import SECTOR_MAP
+            db_tickers = [r[0] for r in conn.execute(
+                "SELECT DISTINCT ticker FROM prices WHERE date >= '2026-03-20' LIMIT 20").fetchall()]
+            mapped = [t for t in db_tickers if t in SECTOR_MAP]
+            unmapped = [t for t in db_tickers if t not in SECTOR_MAP]
+            conn.close()
+
             scores = compute_sector_scores()
             self._send_json({
                 "n_prices": n_prices,
@@ -153,6 +161,10 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
                 "latest_date": latest,
                 "n_sectors": sum(1 for d in scores.values() if not d.get("is_index")),
                 "n_indices": sum(1 for d in scores.values() if d.get("is_index")),
+                "db_tickers_sample": db_tickers,
+                "mapped": mapped,
+                "unmapped": unmapped,
+                "sector_map_sample": dict(list(SECTOR_MAP.items())[:5]),
                 "sectors": {k: {"score": v["score"], "n": v["n_tickers"]}
                             for k, v in scores.items()},
             })
