@@ -1,6 +1,6 @@
 name: "Trading App"
 description: "Swing-Trading System mit Pattern-Erkennung"
-version: "1.0.9"
+version: "1.1.0"
 slug: "trading_app"
 url: "https://github.com/uk05de/trading"
 arch:
@@ -9,6 +9,7 @@ arch:
 startup: application
 init: false
 homeassistant_api: true
+host_network: true
 ingress: true
 ingress_port: 8501
 panel_icon: "mdi:chart-line"

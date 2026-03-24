@@ -15,10 +15,14 @@ fi
 # Symlink damit der App-Code die DB findet
 ln -sf "$TRADING_DB_PATH" /app/data/trading.db 2>/dev/null || true
 
-echo "Starte Trading App..."
 cd /app
 
+# Trading API im Hintergrund starten (Port 8502)
+echo "Starte Trading API auf Port 8502..."
+python3 trading_api.py &
+
 # Streamlit starten — Ingress-kompatibel
+echo "Starte Trading App auf Port 8501..."
 exec python3 -m streamlit run app.py \
     --server.port=8501 \
     --server.address=0.0.0.0 \
