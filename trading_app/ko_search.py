@@ -1,10 +1,11 @@
 """
-ko_search.py – KO-Zertifikat Lookup via onvista API + Produktauswahl-Logik.
+ko_search.py – KO-Zertifikat Suche + Lookup via onvista API.
 
 Funktionen:
-  - lookup_isin():        Produktdetails per ISIN von onvista holen
-  - calc_ideal_ko():      Ideales KO-Level aus Signal + Max-Verlust berechnen
-  - evaluate_product():   Konkretes Produkt gegen Signal-Parameter prüfen
+  - search_ko():           Passende KO-Zertifikate fuer ein Signal suchen
+  - lookup_isin():         Produktdetails per ISIN von onvista holen
+  - calc_ideal_ko():       Ideales KO-Level aus Signal + Max-Verlust berechnen
+  - evaluate_product():    Konkretes Produkt gegen Signal-Parameter pruefen
   - refresh_product_price(): Aktuellen Bid-Kurs eines Produkts holen
 """
 
@@ -12,13 +13,25 @@ from __future__ import annotations
 
 import logging
 import time
+import urllib.parse
 import requests
 
 log = logging.getLogger(__name__)
 
 ONVISTA_BASE = "https://api.onvista.de/api/v1"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 TIMEOUT = 10
+
+# Trade Republic Emittenten
+TRADE_REPUBLIC_ISSUERS = {
+    53882: "HSBC",
+    53159: "Société Générale",
+    54101: "Vontobel",
+}
+DEFAULT_ISSUER_IDS = ",".join(str(k) for k in TRADE_REPUBLIC_ISSUERS)
+
+# KO-Puffer: Mindestabstand zwischen SL und KO (in % vom SL)
+KO_BUFFER_PCT = 3.0
 
 # Cache: {isin: (timestamp, data)} – vermeidet doppelte API-Calls
 _cache: dict[str, tuple[float, dict | None]] = {}
@@ -41,6 +54,127 @@ def _set_cache(isin: str, data: dict | None):
 def clear_price_cache():
     """Clear the ISIN lookup cache to force fresh API calls."""
     _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# KO-Zertifikat Suche
+# ---------------------------------------------------------------------------
+
+def _get_underlying_name(ticker: str) -> str:
+    """Ticker → onvista URL-Name fuer den Referrer (z.B. SAP.DE → SAP)."""
+    # .DE/.F Suffix entfernen
+    clean = ticker.split(".")[0]
+    # Mapping fuer bekannte Ticker die anders heissen
+    name_map = {
+        "1COV": "Covestro", "VOW3": "Volkswagen-VZ",
+        "MBG": "Mercedes-Benz-Group", "DHL": "DHL-Group",
+        "EOAN": "E-ON", "SY1": "Symrise", "HEN3": "Henkel-VZ",
+        "PAH3": "Porsche-Automobil-Holding-VZ",
+    }
+    return name_map.get(clean, clean)
+
+
+def search_ko(ticker: str, entry: float, stop_loss: float,
+              direction: str = "LONG",
+              ko_buffer_pct: float = KO_BUFFER_PCT,
+              max_results: int = 5,
+              issuer_ids: str = DEFAULT_ISSUER_IDS) -> list[dict]:
+    """
+    Suche passende KO-Zertifikate fuer ein Signal.
+
+    Args:
+        ticker: Aktien-Ticker (z.B. SAP.DE)
+        entry: Einstiegskurs Basiswert
+        stop_loss: Stop-Loss Basiswert
+        direction: LONG oder SHORT
+        ko_buffer_pct: Mindestabstand KO unter SL in %
+        max_results: Max Anzahl Ergebnisse
+        issuer_ids: Komma-separierte Emittenten-IDs
+
+    Returns:
+        Liste von Dicts mit: isin, wkn, name, emittent, ko_level, bid, ask,
+        hebel, spread_pct, ko_abstand_pct, bv, open_end
+    """
+    if direction == "LONG":
+        # KO muss unter SL liegen, mit Puffer
+        ko_max = stop_loss * (1 - ko_buffer_pct / 100)
+        # KO nicht zu weit weg (sonst zu wenig Hebel) — max 20% unter Entry
+        ko_min = entry * 0.80
+        exercise_right = 2  # CALL
+    else:
+        ko_max = entry * 1.20
+        ko_min = stop_loss * (1 + ko_buffer_pct / 100)
+        exercise_right = 1  # PUT
+
+    # Query-Parameter zusammenbauen
+    query_params = (
+        f"entitySubType=KNOCKOUT_CERTIFICATE"
+        f"&openEnded=1"
+        f"&idExerciseRight={exercise_right}"
+        f"&idIssuer={issuer_ids}"
+        f"&knockOutAbsRange={ko_min:.1f};{ko_max:.1f}"
+    )
+
+    ul_name = _get_underlying_name(ticker)
+    referrer = f"/derivate/Knock-Outs/Knock-Outs-auf-{ul_name}"
+
+    url = (
+        f"{ONVISTA_BASE}/derivatives/finder/configuration_query"
+        f"?application=WEBSITE&device=DESKTOP"
+        f"&page=0&perPage={max_results}"
+        f"&queryParameters={urllib.parse.quote(query_params)}"
+        f"&referrer={urllib.parse.quote(referrer)}"
+    )
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        log.warning("KO-Suche fehlgeschlagen fuer %s: %s", ticker, e)
+        return []
+
+    results = []
+    for item in data.get("list", []):
+        instr = item.get("instrument", {})
+        quote = item.get("quote", {})
+        issuer = item.get("issuer", {})
+
+        ko_level = item.get("knockOutAbs")
+        bid = quote.get("bid")
+        ask = quote.get("ask")
+
+        if not ko_level or not bid:
+            continue
+
+        # Hebel berechnen
+        if direction == "LONG":
+            hebel = entry / (entry - ko_level) if entry > ko_level else 0
+            ko_abstand = (stop_loss - ko_level) / stop_loss * 100
+        else:
+            hebel = entry / (ko_level - entry) if ko_level > entry else 0
+            ko_abstand = (ko_level - stop_loss) / stop_loss * 100
+
+        results.append({
+            "isin": instr.get("isin"),
+            "wkn": instr.get("wkn"),
+            "name": item.get("shortName", instr.get("name", "")),
+            "emittent": issuer.get("name", ""),
+            "ko_level": round(ko_level, 2),
+            "bid": bid,
+            "ask": ask,
+            "hebel": round(hebel, 1),
+            "spread_pct": round(item.get("spreadAskPct", 0), 2),
+            "ko_abstand_sl_pct": round(ko_abstand, 1),
+            "bv": item.get("coverRatio", 1.0),
+            "open_end": item.get("openEnded", False),
+            "direction": "LONG" if item.get("nameExerciseRight") == "CALL" else "SHORT",
+        })
+
+    # Sortieren nach Spread (niedrigster zuerst)
+    results.sort(key=lambda x: x["spread_pct"])
+
+    return results[:max_results]
 
 
 # ---------------------------------------------------------------------------

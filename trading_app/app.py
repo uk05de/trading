@@ -939,233 +939,200 @@ def show_signal_dialog(ticker: str):
     # ══════════════════════════════════════════════════════════════════════
     if not _active_trade:
         with _tabs[4]:
-            # Datenquelle wählen: Konsens (default) / Technisch / KI
-            _ai_for_trade = get_ai_assessments(ticker, limit=1)
-            _has_ai = bool(_ai_for_trade)
-            if _has_ai:
-                _source_options = ["Konsens", "Technisch", "KI"]
-                _default_idx = 0
+            from ko_search import search_ko, lookup_isin, evaluate_product
+            from db import calc_position_size_risk
+
+            _sig_price = base_sig["entry"]
+            _sig_sl = base_sig.get("stop_loss")
+            _sig_tgt = base_sig.get("target")
+            _sig_dir = base_sig["direction"]
+
+            if not _sig_sl or not _sig_tgt:
+                st.warning("Signal hat kein Stop-Loss oder Target.")
+
             else:
-                _source_options = ["Technisch"]
-                _default_idx = 0
-            _trade_source = st.radio(
-                "Datenquelle", _source_options, index=_default_idx,
-                horizontal=True, key="dlg_sig_source",
-                help="Konsens = Tech-Stop + konservatives Ziel (ideal für KO), "
-                     "Technisch = System-Empfehlung, KI = Claude-Bewertung",
-            )
+                # ── 1. Automatische KO-Suche ──────────────────────────
+                st.markdown("#### Passendes KO-Zertifikat")
 
-            # Technisch-Werte als Basis
-            _tech_sl = base_sig.get("stop_loss")
-            _tech_tgt = base_sig.get("target")
-            _tech_price = base_sig["entry"]
-            _tech_dir = base_sig["direction"]
-            _tech_rr = base_sig.get("risk_reward")
-
-            if _trade_source == "KI" and _has_ai:
-                _ai_d = _ai_for_trade[0]
-                _sig_sl_form = _ai_d.get("stop_loss")
-                _sig_tgt_form = _ai_d.get("target")
-                _sig_price_form = _ai_d.get("entry") or _tech_price
-                _sig_dir_form = _ai_d["direction"]
-                _sig_rr_form = _ai_d.get("risk_reward")
-            elif _trade_source == "Konsens" and _has_ai:
-                _ai_d = _ai_for_trade[0]
-                # Stop = Technisch (ATR-basiert, sicherer für KO)
-                _sig_sl_form = _tech_sl
-                # Ziel = konservativ (näher am Kurs)
-                _ai_tgt = _ai_d.get("target")
-                if _tech_tgt and _ai_tgt:
-                    if _tech_dir == "LONG":
-                        _sig_tgt_form = min(_tech_tgt, _ai_tgt)
-                    else:
-                        _sig_tgt_form = max(_tech_tgt, _ai_tgt)
-                else:
-                    _sig_tgt_form = _tech_tgt
-                _sig_price_form = _tech_price
-                _sig_dir_form = _tech_dir
-                # R/R aus Konsens-Werten berechnen (ohne Erzwingung)
-                _k_risk = abs(_tech_price - _sig_sl_form) if _sig_sl_form else 0
-                _k_reward = abs(_sig_tgt_form - _tech_price) if _sig_tgt_form else 0
-                _sig_rr_form = round(_k_reward / _k_risk, 2) if _k_risk > 0 else 0
-            else:
-                _sig_sl_form = _tech_sl
-                _sig_tgt_form = _tech_tgt
-                _sig_price_form = _tech_price
-                _sig_dir_form = _tech_dir
-                _sig_rr_form = _tech_rr
-
-            if not _has_ai:
-                st.caption("Erstelle eine KI-Bewertung im Tab 'KI-Bewertung', um sie hier als Datenquelle nutzen zu können.")
-            if _sig_rr_form and _sig_rr_form < 0.9:
-                st.warning(
-                    f"R/R = {_sig_rr_form:.2f} – unter 0.9. "
-                    "Backtest zeigt: Trades unter R/R 0.9 sind im Schnitt unprofitabel."
+                _ko_buffer = st.slider(
+                    "Mindestabstand KO unter SL (%)", 1.0, 10.0, 3.0, 0.5,
+                    key="dlg_sig_ko_buffer",
+                    help="Je größer, desto sicherer (weniger Hebel). 3% = Standard.",
                 )
 
-            # KO-Empfehlung
-            _max_loss_form = 30
-            if _sig_sl_form and _sig_tgt_form:
-                st.markdown("#### KO-Produkt Empfehlung")
-                _max_loss_form = st.slider(
-                    "Max. Verlust bei Stop-Loss (%)", 10, 60, 30, 5,
-                    key="dlg_sig_trade_max_loss",
-                    help="Wie viel % willst du maximal verlieren, wenn der SL auf Basiswert-Ebene greift?",
-                )
-                _ideal_form = calc_ideal_ko(_sig_price_form, _sig_sl_form, _sig_dir_form,
-                                            max_loss_pct=_max_loss_form / 100)
+                # Suche beim ersten Laden oder per Button
+                _search_key = f"ko_search_{ticker}_{_sig_sl}_{_ko_buffer}"
+                if _search_key not in st.session_state or st.button(
+                        "Neu suchen", key="dlg_sig_ko_refresh", type="tertiary"):
+                    with st.spinner("Suche KO-Zertifikate..."):
+                        _ko_results = search_ko(ticker, _sig_price, _sig_sl, _sig_dir,
+                                                ko_buffer_pct=_ko_buffer)
+                    st.session_state[_search_key] = _ko_results
 
-                if "error" not in _ideal_form:
-                    ik1, ik2, ik3, ik4 = st.columns(4)
-                    ik1.metric("Ideales KO", _fmt(_ideal_form['ko_ideal'], ticker))
-                    ik2.metric("Hebel", f"{_ideal_form['leverage']:.1f}×")
-                    ik3.metric("Risiko (Basiswert)", f"{_ideal_form['risk_stock_pct']:.1f}%")
-                    ik4.metric("KO-Bereich",
-                               f"{_ideal_form['ko_range_min']:.2f} – {_ideal_form['ko_range_max']:.2f} {_unit(ticker)}")
+                _ko_results = st.session_state.get(_search_key, [])
 
-            # ISIN Lookup
-            st.divider()
-            st.markdown("**ISIN des Produkts eingeben:**")
-            _isin_col1, _isin_col2 = st.columns([2, 1])
-            with _isin_col1:
-                trade_isin_input = st.text_input(
-                    "ISIN", placeholder="z.B. DE000TB2BE38",
-                    key="dlg_sig_trade_isin_lookup",
-                )
-            with _isin_col2:
-                st.write("")
-                _do_lookup = st.button("Produkt laden", key="dlg_sig_btn_isin_lookup")
+                if _ko_results:
+                    # Bestes Zertifikat (niedrigster Spread)
+                    _best = _ko_results[0]
 
-            # Formular-Defaults einmalig initialisieren
-            if "dlg_sig_tf_dir" not in st.session_state:
-                st.session_state["dlg_sig_tf_dir"] = base_sig["direction"]
-                st.session_state["dlg_sig_tf_kk"] = 0.0
-                st.session_state["dlg_sig_tf_tgt"] = float(base_sig["target"]) if base_sig.get("target") else 0.0
-                st.session_state["dlg_sig_tf_stp"] = float(base_sig["stop_loss"]) if base_sig.get("stop_loss") else 0.0
-                st.session_state["dlg_sig_tf_wkn"] = ""
-                st.session_state["dlg_sig_tf_ko"] = 0.0
-                st.session_state["dlg_sig_tf_bv"] = 0.1
-                st.session_state["dlg_sig_tf_emit"] = ""
+                    # Tabelle aller Ergebnisse
+                    _ko_rows = []
+                    for i, r in enumerate(_ko_results):
+                        _ko_rows.append({
+                            "#": i + 1,
+                            "WKN": r["wkn"],
+                            "ISIN": r["isin"],
+                            "Emittent": r["emittent"],
+                            "KO": r["ko_level"],
+                            "Hebel": f"{r['hebel']:.1f}x",
+                            "Bid": r["bid"],
+                            "Ask": r["ask"],
+                            "Spread": f"{r['spread_pct']:.1f}%",
+                            "KO-Abstand SL": f"{r['ko_abstand_sl_pct']:.1f}%",
+                        })
+                    st.dataframe(pd.DataFrame(_ko_rows), hide_index=True, use_container_width=True)
 
-            if _do_lookup and trade_isin_input and len(trade_isin_input) >= 12:
-                with st.spinner("Lade Produktdaten…"):
-                    _prod_data = lookup_isin(trade_isin_input)
-                if _prod_data:
-                    st.session_state["dlg_sig_trade_product"] = _prod_data
-                    # Formular-Felder aus Produktdaten überschreiben
-                    st.session_state["dlg_sig_tf_dir"] = _prod_data["direction"]
-                    st.session_state["dlg_sig_tf_kk"] = float(_prod_data["bid"]) if _prod_data.get("bid") else 0.0
-                    st.session_state["dlg_sig_tf_wkn"] = _prod_data.get("wkn") or ""
-                    st.session_state["dlg_sig_tf_ko"] = float(_prod_data["ko_level"]) if _prod_data.get("ko_level") else 0.0
-                    st.session_state["dlg_sig_tf_bv"] = float(_prod_data["bv"]) if _prod_data.get("bv") else 0.1
-                    st.session_state["dlg_sig_tf_emit"] = _prod_data.get("emittent") or ""
-                else:
-                    st.error("Produkt nicht gefunden. Bitte ISIN prüfen.")
-                    st.session_state.pop("dlg_sig_trade_product", None)
-            elif _do_lookup:
-                st.warning("Bitte eine vollständige ISIN eingeben (12 Zeichen).")
-
-            _loaded_product = st.session_state.get("dlg_sig_trade_product")
-
-            if _loaded_product:
-                _p = _loaded_product
-                _dir_match = _p["direction"] == _sig_dir_form
-                _dir_icon = "✅" if _dir_match else "❌"
-                _prod_info = (
-                    f"**{_p['name']}** · {_p['emittent']} · WKN: {_p['wkn']} · "
-                    f"{_dir_icon} {_p['direction']} · "
-                    f"KO: {_p['ko_level']:.2f} · BV: {_p['bv']} · "
-                    f"{'Open End' if _p['open_end'] else 'Laufzeit begrenzt'}"
-                )
-                if _p.get("bid"):
-                    _prod_info += f" · Bid: {_p['bid']:.2f} €"
-                st.markdown(_prod_info)
-
-                if not _dir_match:
-                    st.error(f"⚠ Richtung passt nicht! Signal: {_sig_dir_form}, Produkt: {_p['direction']}")
-
-                if _p.get("ko_level") and _sig_sl_form and _sig_tgt_form:
-                    _eval = evaluate_product(
-                        _p["ko_level"], _p["bv"],
-                        _sig_price_form, _sig_sl_form, _sig_tgt_form,
-                        _sig_dir_form, max_loss_pct=_max_loss_form / 100,
+                    # Auswahl: Standard = bestes, oder User wählt
+                    _selected_idx = st.selectbox(
+                        "Zertifikat wählen", range(len(_ko_results)),
+                        format_func=lambda i: f"#{i+1} {_ko_results[i]['wkn']} ({_ko_results[i]['emittent']}, Spread {_ko_results[i]['spread_pct']:.1f}%)",
+                        key="dlg_sig_ko_select",
                     )
-                    _prod_rr = round(abs(_eval['gain_at_target_pct']) / abs(_eval['loss_at_sl_pct']), 2
-                                    ) if _eval['loss_at_sl_pct'] != 0 else 0
-                    ev1, ev2, ev3, ev4, ev5 = st.columns(5)
-                    ev1.metric("Hebel", f"{_eval['leverage']:.1f}×")
-                    ev2.metric("Verlust bei SL", f"{_eval['loss_at_sl_pct']:+.1f}%",
-                               delta="OK" if _eval["within_max_loss"] else f">{_max_loss_form}%!",
-                               delta_color="normal" if _eval["within_max_loss"] else "inverse")
-                    ev3.metric("Gewinn bei Ziel", f"{_eval['gain_at_target_pct']:+.1f}%")
-                    _rr_ok = _prod_rr >= 1.5
-                    ev4.metric("R/R", f"{_prod_rr:.2f}",
-                               delta="OK" if _rr_ok else "< 1.5!",
-                               delta_color="normal" if _rr_ok else "inverse")
-                    ev5.metric("KO-Abstand zum SL", f"{_eval['ko_sl_distance_pct']:.1f}%")
-
-                    if not _eval["ko_safe"]:
-                        st.error("⚠ KO zwischen Entry und Stop-Loss – Knockout-Gefahr!")
-                    elif not _eval["within_max_loss"]:
-                        st.warning(f"⚠ Verlust bei SL ({_eval['loss_at_sl_pct']:.1f}%) > Maximum ({_max_loss_form}%)")
-                    elif not _rr_ok:
-                        st.warning(f"R/R = {_prod_rr:.2f} – unter Minimum 1.5")
-                    elif _dir_match:
-                        st.success("✅ Produkt passt – KO sicher, Verlust im Rahmen")
-
-            # ── Position-Sizing Empfehlung ──────────────────────────────
-            st.divider()
-            st.markdown("#### Position-Sizing")
-
-            _cash_info = get_free_cash()
-            _ps_m1, _ps_m2, _ps_m3, _ps_m4 = st.columns(4)
-            _ps_m1.metric("Freies Cash", f"€{_cash_info['balance']:,.2f}")
-            _ps_m2.metric("Gebunden", f"€{_cash_info['locked_cash']:,.2f}",
-                          delta=f"{_cash_info['open_count']} Pos." if _cash_info['open_count'] > 0 else "Keine",
-                          delta_color="off")
-            _ps_m3.metric("Portfolio", f"€{_cash_info['portfolio_value']:,.2f}")
-            _ps_m4.metric("2% Risiko", f"€{_cash_info['balance'] * 0.02:,.2f}")
-
-            if _cash_info["balance"] <= 0 and _cash_info["open_count"] == 0:
-                st.info("Noch kein Guthaben. Buche deine erste Einzahlung unter **Konto**.")
-
-            # Empfehlung berechnen wenn Produktpreis bekannt
-            _product_price_for_sizing = 0.0
-            if _loaded_product and _loaded_product.get("bid"):
-                _product_price_for_sizing = float(_loaded_product["bid"])
-
-            if _product_price_for_sizing > 0:
-                # Risk-2% Sizing
-                _ko_for_sizing = st.session_state.get("_loaded_ko_level")
-                _bv_for_sizing = st.session_state.get("_loaded_bv", 1.0)
-                if _ko_for_sizing and _sig_sl_form:
-                    from db import calc_position_size_risk
-                    _ps = calc_position_size_risk(
-                        _cash_info["balance"], _product_price_for_sizing,
-                        _sig_price_form, _sig_sl_form, _ko_for_sizing,
-                        _sig_dir_form, _bv_for_sizing,
-                    )
-                    if _ps["size"] > 0:
-                        st.success(
-                            f"**Empfehlung: {_ps['size']} Stück** kaufen "
-                            f"(à €{_product_price_for_sizing:.2f} = **€{_ps['invest_actual']:,.2f}**, "
-                            f"{_ps['pct_used']:.0f}% vom Cash) · "
-                            f"Risiko: **€{_ps['loss_at_sl']:,.2f}** bei SL "
-                            f"({_ps['loss_at_sl']/_cash_info['balance']*100:.1f}% vom Cash)"
-                        )
-                    else:
-                        st.warning(
-                            f"Zu wenig Cash (Risiko €{_ps['risk_amount']:,.2f}, "
-                            f"Produkt €{_product_price_for_sizing:.2f})"
-                        )
+                    _selected = _ko_results[_selected_idx]
                 else:
-                    st.info("KO-Produkt auswaehlen fuer Risk-2% Sizing-Empfehlung")
-                    _ps = {"size": 0}
-                # Default-Stückzahl setzen
-                if _ps["size"] > 0:
-                    if "dlg_sig_tf_size" not in st.session_state or st.session_state.get("_ps_auto_size") != _ps["size"]:
-                        st.session_state["dlg_sig_tf_size"] = float(_ps["size"])
-                        st.session_state["_ps_auto_size"] = _ps["size"]
+                    st.warning("Keine passenden KO-Zertifikate gefunden.")
+                    _selected = None
+
+                # ── Fallback: Manueller ISIN Lookup ──
+                with st.expander("Manuell per ISIN suchen"):
+                    _isin_col1, _isin_col2 = st.columns([2, 1])
+                    with _isin_col1:
+                        _manual_isin = st.text_input(
+                            "ISIN", placeholder="z.B. DE000TB2BE38",
+                            key="dlg_sig_manual_isin",
+                        )
+                    with _isin_col2:
+                        st.write("")
+                        _do_manual = st.button("Laden", key="dlg_sig_btn_manual_isin")
+
+                    if _do_manual and _manual_isin and len(_manual_isin) >= 12:
+                        with st.spinner("Lade..."):
+                            _manual_prod = lookup_isin(_manual_isin)
+                        if _manual_prod:
+                            _selected = {
+                                "isin": _manual_prod["isin"],
+                                "wkn": _manual_prod.get("wkn", ""),
+                                "emittent": _manual_prod.get("emittent", ""),
+                                "ko_level": _manual_prod.get("ko_level", 0),
+                                "bid": _manual_prod.get("bid", 0),
+                                "ask": 0,
+                                "hebel": _manual_prod.get("leverage", 0),
+                                "bv": _manual_prod.get("bv", 1.0),
+                                "spread_pct": 0,
+                                "ko_abstand_sl_pct": 0,
+                                "direction": _manual_prod.get("direction", _sig_dir),
+                            }
+                            st.success(f"Geladen: {_manual_prod.get('name')} ({_manual_prod['isin']})")
+                        else:
+                            st.error("Nicht gefunden.")
+
+                if _selected:
+                    # ── 2. Position-Sizing ──────────────────────────
+                    st.divider()
+                    st.markdown("#### Position-Sizing (Risk 2%)")
+
+                    _cash_info = get_free_cash()
+                    _ko_level = _selected["ko_level"]
+                    _bv = _selected.get("bv", 1.0)
+                    _bid = _selected["bid"]
+
+                    if _bid and _bid > 0 and _ko_level:
+                        _ps = calc_position_size_risk(
+                            _cash_info["balance"], _bid,
+                            _sig_price, _sig_sl, _ko_level,
+                            _sig_dir, _bv,
+                        )
+
+                        _m1, _m2, _m3, _m4 = st.columns(4)
+                        _m1.metric("Stück", f"{_ps['size']}")
+                        _m2.metric("Invest", f"€{_ps['invest_actual']:,.2f}")
+                        _m3.metric("Risiko bei SL", f"€{_ps['loss_at_sl']:,.2f}")
+                        _m4.metric("Cash", f"€{_cash_info['balance']:,.2f}")
+
+                        _size = _ps["size"]
+                    else:
+                        st.warning("Kein Bid-Preis verfügbar.")
+                        _size = 0
+
+                    # ── 3. ISIN kopieren + Trade bestätigen ──────────
+                    st.divider()
+
+                    # ISIN zum Kopieren
+                    _isin_display = _selected["isin"]
+                    st.code(_isin_display, language=None)
+                    st.caption("☝️ ISIN kopieren → in Trade Republic suchen → Kaufen")
+
+                    st.markdown(f"**{_selected['wkn']}** · {_selected['emittent']} · "
+                                f"KO: {_selected['ko_level']:.2f} · "
+                                f"Hebel: {_selected['hebel']:.1f}x · "
+                                f"Bid: {_selected['bid']:.2f} €")
+
+                    # ── 4. Kaufpreis eintragen + bestätigen ──────────
+                    st.divider()
+                    st.markdown("#### Kauf bestätigen")
+
+                    with st.form("dlg_sig_open_trade_form", clear_on_submit=True):
+                        _fc1, _fc2, _fc3 = st.columns(3)
+                        with _fc1:
+                            trade_kaufpreis = st.number_input(
+                                "Tatsächlicher Kaufpreis (Produkt)",
+                                value=float(_bid) if _bid else 0.0,
+                                min_value=0.0, step=0.01, format="%.2f",
+                                key="dlg_sig_tf_kaufpreis",
+                            )
+                        with _fc2:
+                            trade_stueck = st.number_input(
+                                "Stück",
+                                value=float(_size) if _size > 0 else 1.0,
+                                min_value=1.0, step=1.0, format="%.0f",
+                                key="dlg_sig_tf_size",
+                            )
+                        with _fc3:
+                            trade_entry_date = st.date_input(
+                                "Kaufdatum", value=dt.date.today(),
+                                key="dlg_sig_tf_date",
+                            )
+
+                        trade_is_test = st.checkbox("Test-Trade", key="dlg_sig_tf_test")
+
+                        submitted = st.form_submit_button("Trade eröffnen", type="primary", use_container_width=True)
+
+                        if submitted and trade_kaufpreis > 0:
+                            _trade_id = open_trade({
+                                "signal_id": base_sig.get("id"),
+                                "ticker": ticker,
+                                "name": name,
+                                "direction": _sig_dir,
+                                "entry_date": trade_entry_date.isoformat(),
+                                "entry_price": _sig_price,
+                                "size": int(trade_stueck),
+                                "target": _sig_tgt,
+                                "stop_loss": _sig_sl,
+                                "isin": _selected["isin"],
+                                "wkn": _selected["wkn"],
+                                "ko_level": _ko_level,
+                                "bv": _bv,
+                                "emittent": _selected["emittent"],
+                                "entry_fees": 1.0,
+                                "is_test": int(trade_is_test),
+                                "current_price": _sig_price,
+                                "product_bid": trade_kaufpreis,
+                            })
+                            if _trade_id:
+                                st.success(f"Trade #{_trade_id} eröffnet!")
+                                st.rerun()
+                            else:
+                                st.error("Fehler beim Eröffnen.")
 
             # Trade-Formular
             st.divider()
