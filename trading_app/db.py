@@ -496,6 +496,7 @@ def open_trade(trade: dict) -> int:
     trade.setdefault("emittent", None)
     trade.setdefault("product_bid", None)
     trade.setdefault("entry_fees", 1.0)
+    trade.setdefault("notes", None)
     trade.setdefault("current_price", trade.get("entry_price"))
 
     cur = conn.execute("""
