@@ -1167,7 +1167,6 @@ def show_signal_dialog(ticker: str):
 # PAGE: Empfehlungen (top)
 # =========================================================================
 def page_empfehlungen():
-    _data_info_placeholder = st.empty()
 
     # Only scan when explicitly requested; otherwise load from DB
     results_df = pd.DataFrame()
@@ -1263,7 +1262,7 @@ def page_empfehlungen():
                 _ts_str = _ts_dt.strftime("%d.%m.%Y %H:%M Uhr")
             except (ValueError, TypeError):
                 _ts_str = _signal_date_str or "unbekannt"
-            _data_info_placeholder.caption(f"Stand von {_ts_str}")
+            st.sidebar.caption(f"Stand: {_ts_str}")
 
     # Load open trades from DB (always, independent of scan)
     _db_open_trades = get_trades(status="OPEN")
