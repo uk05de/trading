@@ -303,72 +303,46 @@ st.markdown("""
 
 
 # ---------------------------------------------------------------------------
-# Shared Header (wird von Seiten aufgerufen die Scan-Buttons brauchen)
+# Sidebar Aktionen (unter der Navigation)
 # ---------------------------------------------------------------------------
-def _render_header():
-    """Header mit Titel und Scan-Buttons — nur auf Empfehlungen-Seite."""
-    _title_col, _btn_refresh, _btn_ai, _btn_col = st.columns([5, 1, 1, 1])
-    with _title_col:
-        st.title("Robski's Super Trader")
-    with _btn_refresh:
-        st.write("")
-        _do_refresh = st.button("Trades aktualisieren", width="stretch")
-    with _btn_ai:
-        st.write("")
-        _do_ai_batch = st.button("KI-Bewertung", width="stretch",
-                                 help="KI-Bewertung für Top-Signale (|Score| >= 40)")
-    with _btn_col:
-        st.write("")
-        rescan = st.button("Alles aktualisieren", type="primary", width="stretch")
-        if rescan:
-            st.cache_data.clear()
-            st.session_state["run_scan"] = True
-    _data_info_placeholder = st.empty()
-
-    if _do_refresh:
-        clear_price_cache()
-        import scanner as _scanner_mod
-        _refresh_bar = st.progress(0, text="Trades aktualisieren ...")
-        _scanner_mod.progress_callback = lambda d, t, txt: _refresh_bar.progress(d / t, text=f"Trades: {txt}")
-        _n_updated = refresh_open_trades()
-        _scanner_mod.progress_callback = None
-        _refresh_bar.empty()
-        if _n_updated:
-            st.session_state["_refresh_msg"] = (
-                f"{_n_updated} Trade(s) aktualisiert — {dt.datetime.now().strftime('%H:%M:%S Uhr')}")
-        else:
-            st.session_state["_refresh_msg"] = "warn:Keine offenen Trades gefunden."
+with st.sidebar:
+    st.divider()
+    _do_refresh = st.button("🔄 Trades aktualisieren", use_container_width=True)
+    _do_ai_batch = st.button("🤖 KI-Bewertung", use_container_width=True)
+    if st.button("📡 Alles aktualisieren", type="primary", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state["run_scan"] = True
         st.rerun()
 
-    _refresh_msg = st.session_state.pop("_refresh_msg", None)
-    if _refresh_msg:
-        if _refresh_msg.startswith("warn:"):
-            _data_info_placeholder.warning(_refresh_msg[5:])
-        else:
-            _data_info_placeholder.caption(_refresh_msg)
+if _do_refresh:
+    clear_price_cache()
+    import scanner as _scanner_mod
+    _refresh_bar = st.progress(0, text="Trades aktualisieren ...")
+    _scanner_mod.progress_callback = lambda d, t, txt: _refresh_bar.progress(d / t, text=f"Trades: {txt}")
+    _n_updated = refresh_open_trades()
+    _scanner_mod.progress_callback = None
+    _refresh_bar.empty()
+    if _n_updated:
+        st.toast(f"{_n_updated} Trade(s) aktualisiert", icon="✅")
+    else:
+        st.toast("Keine offenen Trades", icon="⚠️")
 
-    if _do_ai_batch:
-        _sr = st.session_state.get("scan_results")
-        if _sr is not None and not _sr.empty:
-            _n_cand = (_sr["Score"].abs() >= 40).sum()
-            if _n_cand > 0:
-                _ai_progress = st.progress(0, text=f"KI-Bewertung: 0/{_n_cand} ...")
-                def _ai_cb(done, total):
-                    _ai_progress.progress(done / total, text=f"KI-Bewertung: {done}/{total} ...")
-                _sr = run_ai_for_top_signals(_sr, threshold=40.0, progress_callback=_ai_cb)
-                _ai_progress.empty()
-                st.session_state["scan_results"] = _sr
-                _n_k = (_sr["Konsens"] == "\u2605\u2605\u2605").sum() if "Konsens" in _sr.columns else 0
-                _n_w = (_sr["Konsens"] == "\u26a0").sum() if "Konsens" in _sr.columns else 0
-                st.session_state["_refresh_msg"] = (
-                    f"KI-Bewertung: {_n_cand} bewertet, {_n_k} Konsens, {_n_w} Widerspruch")
-            else:
-                st.session_state["_refresh_msg"] = "warn:Keine Signale mit |Score| >= 40 vorhanden."
+if _do_ai_batch:
+    _sr = st.session_state.get("scan_results")
+    if _sr is not None and not _sr.empty:
+        _n_cand = (_sr["Score"].abs() >= 40).sum()
+        if _n_cand > 0:
+            _ai_progress = st.progress(0, text=f"KI-Bewertung: 0/{_n_cand} ...")
+            def _ai_cb(done, total):
+                _ai_progress.progress(done / total, text=f"KI-Bewertung: {done}/{total} ...")
+            _sr = run_ai_for_top_signals(_sr, threshold=40.0, progress_callback=_ai_cb)
+            _ai_progress.empty()
+            st.session_state["scan_results"] = _sr
+            st.toast(f"KI: {_n_cand} bewertet", icon="🤖")
         else:
-            st.session_state["_refresh_msg"] = "warn:Keine Scan-Ergebnisse. Bitte zuerst Scan starten."
-        st.rerun()
-
-    return _data_info_placeholder
+            st.toast("Keine Signale mit Score >= 40", icon="⚠️")
+    else:
+        st.toast("Zuerst Scan starten", icon="⚠️")
 
 # ---------------------------------------------------------------------------
 # Style helpers (module level)
@@ -1194,7 +1168,7 @@ def show_signal_dialog(ticker: str):
 # PAGE: Empfehlungen (top)
 # =========================================================================
 def page_empfehlungen():
-    _data_info_placeholder = _render_header()
+    _data_info_placeholder = st.empty()
 
     # Only scan when explicitly requested; otherwise load from DB
     results_df = pd.DataFrame()
