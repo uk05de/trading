@@ -1,6 +1,6 @@
 name: "Trading App"
 description: "Swing-Trading System mit Pattern-Erkennung"
-version: "1.2.3"
+version: "1.2.4"
 slug: "trading_app"
 url: "https://github.com/uk05de/trading"
 arch:

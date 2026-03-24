@@ -138,6 +138,24 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
             self._send_json(data)
         elif self.path == "/api/health":
             self._send_json({"status": "ok"})
+        elif self.path == "/api/debug/sectors":
+            from sectors import compute_sector_scores
+            from db import _connect
+            conn = _connect()
+            n_prices = conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
+            n_tickers = conn.execute("SELECT COUNT(DISTINCT ticker) FROM prices").fetchone()[0]
+            latest = conn.execute("SELECT MAX(date) FROM prices").fetchone()[0]
+            conn.close()
+            scores = compute_sector_scores()
+            self._send_json({
+                "n_prices": n_prices,
+                "n_tickers": n_tickers,
+                "latest_date": latest,
+                "n_sectors": sum(1 for d in scores.values() if not d.get("is_index")),
+                "n_indices": sum(1 for d in scores.values() if d.get("is_index")),
+                "sectors": {k: {"score": v["score"], "n": v["n_tickers"]}
+                            for k, v in scores.items()},
+            })
         else:
             self.send_error(404)
 
