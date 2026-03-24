@@ -138,39 +138,6 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
             self._send_json(data)
         elif self.path == "/api/health":
             self._send_json({"status": "ok"})
-        elif self.path == "/api/debug/sectors":
-            try:
-                from sectors import compute_sector_scores
-                from db import _connect
-                from markets import SECTOR_MAP
-                from pathlib import Path
-                conn = _connect()
-                n_prices = conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
-                n_tickers = conn.execute("SELECT COUNT(DISTINCT ticker) FROM prices").fetchone()[0]
-                latest = conn.execute("SELECT MAX(date) FROM prices").fetchone()[0]
-                db_tickers = [r[0] for r in conn.execute(
-                    "SELECT DISTINCT ticker FROM prices WHERE date >= '2026-03-20' LIMIT 20").fetchall()]
-                conn.close()
-                mapped = [t for t in db_tickers if t in SECTOR_MAP]
-                unmapped = [t for t in db_tickers if t not in SECTOR_MAP]
-                gics_path = Path(__file__).parent / "data" / "gics_sectors.json"
-                scores = compute_sector_scores()
-                self._send_json({
-                    "n_prices": n_prices,
-                    "n_tickers": n_tickers,
-                    "latest_date": latest,
-                    "gics_file_exists": gics_path.exists(),
-                    "sector_map_size": len(SECTOR_MAP),
-                    "n_sectors": sum(1 for d in scores.values() if not d.get("is_index")),
-                    "n_indices": sum(1 for d in scores.values() if d.get("is_index")),
-                    "db_tickers_sample": db_tickers,
-                    "mapped": mapped,
-                    "unmapped": unmapped,
-                    "sectors": {k: {"score": v["score"], "n": v["n_tickers"]}
-                                for k, v in scores.items()},
-                })
-            except Exception as e:
-                self._send_json({"error": str(e)})
         else:
             self.send_error(404)
 
