@@ -306,10 +306,9 @@ st.markdown("""
 # Sidebar Aktionen (unter der Navigation)
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.divider()
-    _do_refresh = st.button("🔄 Trades aktualisieren", use_container_width=True)
-    _do_ai_batch = st.button("🤖 KI-Bewertung", use_container_width=True)
-    if st.button("📡 Alles aktualisieren", type="primary", use_container_width=True):
+    _do_refresh = st.button("Trades aktualisieren", use_container_width=True)
+    _do_ai_batch = st.button("KI-Bewertung", use_container_width=True)
+    if st.button("Alles aktualisieren", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.session_state["run_scan"] = True
         st.rerun()
@@ -2277,11 +2276,11 @@ def page_wiki():
 # Navigation Setup + Run
 # =========================================================================
 pg = st.navigation([
-    st.Page(page_empfehlungen, title="Empfehlungen", icon="📊", default=True),
-    st.Page(page_trades, title="Trades", icon="💼"),
-    st.Page(page_konto, title="Konto", icon="🏦"),
-    st.Page(page_historie, title="Historie", icon="📜"),
-    st.Page(page_wiki, title="Wiki", icon="📖"),
+    st.Page(page_empfehlungen, title="Empfehlungen", default=True),
+    st.Page(page_trades, title="Trades"),
+    st.Page(page_konto, title="Konto"),
+    st.Page(page_historie, title="Historie"),
+    st.Page(page_wiki, title="Wiki"),
 ])
 pg.run()
 
