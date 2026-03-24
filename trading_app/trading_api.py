@@ -142,8 +142,156 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
         log.info(format, *args)
 
 
+def _setup_ha_automations():
+    """Lege HA Automationen automatisch an (einmalig beim Start)."""
+    import os
+    import requests as req
+
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        log.info("Kein SUPERVISOR_TOKEN — HA Automationen nicht angelegt (lokaler Modus)")
+        return
+
+    ha_url = "http://supervisor/core/api"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # Prüfe ob unsere Automationen schon existieren
+    try:
+        resp = req.get(f"{ha_url}/states", headers=headers, timeout=5)
+        existing = {s["entity_id"] for s in resp.json()}
+    except Exception as e:
+        log.warning("HA API nicht erreichbar: %s", e)
+        return
+
+    # Notification Service finden (erster mobile_app Service)
+    notify_service = "notify.notify"  # Fallback
+    try:
+        resp = req.get(f"{ha_url}/services", headers=headers, timeout=5)
+        for svc in resp.json():
+            if svc["domain"] == "notify":
+                for s in svc.get("services", {}):
+                    if "mobile_app" in s:
+                        notify_service = f"notify.{s}"
+                        break
+    except Exception:
+        pass
+
+    automations = [
+        {
+            "id": "trading_refresh_trades",
+            "alias": "Trading: Kurse aktualisieren",
+            "description": "Aktualisiert Trades alle 30 Min (08:00-22:00)",
+            "mode": "single",
+            "trigger": [{"platform": "time_pattern", "minutes": "/30"}],
+            "condition": [{"condition": "time", "after": "08:00:00", "before": "22:00:00"}],
+            "action": [{"service": "rest_command.trading_refresh"}],
+        },
+        {
+            "id": "trading_sl_warning",
+            "alias": "Trading: SL Warnung",
+            "description": "Notification wenn ein Trade nahe am SL ist",
+            "mode": "single",
+            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
+            "condition": [{
+                "condition": "template",
+                "value_template": "{{ state_attr('sensor.trading_open_trades', 'has_warning') == true }}"
+            }],
+            "action": [{
+                "service": notify_service,
+                "data": {
+                    "title": "⚠️ Trading: SL Warnung",
+                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.severity in ['warning','critical'] %}{{ a.message }}\n{% endif %}{% endfor %}"
+                }
+            }],
+        },
+        {
+            "id": "trading_sl_breach",
+            "alias": "Trading: SL Durchbrochen",
+            "description": "Kritische Notification wenn SL durchbrochen",
+            "mode": "single",
+            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
+            "condition": [{
+                "condition": "template",
+                "value_template": "{{ state_attr('sensor.trading_open_trades', 'has_critical') == true }}"
+            }],
+            "action": [{
+                "service": notify_service,
+                "data": {
+                    "title": "🔴 TRADING: SL DURCHBROCHEN",
+                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.severity == 'critical' %}{{ a.message }}\n{% endif %}{% endfor %}",
+                    "data": {"push": {"sound": {"name": "default", "critical": 1}}}
+                }
+            }],
+        },
+        {
+            "id": "trading_target_hit",
+            "alias": "Trading: Target erreicht",
+            "description": "Notification wenn Target erreicht",
+            "mode": "single",
+            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
+            "condition": [{
+                "condition": "template",
+                "value_template": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') | default([]) %}{% if a.type == 'target_hit' %}true{% endif %}{% endfor %}"
+            }],
+            "action": [{
+                "service": notify_service,
+                "data": {
+                    "title": "🎯 Trading: Target erreicht!",
+                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.type == 'target_hit' %}{{ a.message }}\n{% endif %}{% endfor %}"
+                }
+            }],
+        },
+    ]
+
+    # REST Sensor + Command in HA anlegen
+    # Das geht leider nicht per API — muss in configuration.yaml
+    # Aber wir können prüfen ob der Sensor existiert und Hinweis geben
+    if "sensor.trading_open_trades" not in existing:
+        log.warning(
+            "sensor.trading_open_trades existiert nicht in HA. "
+            "Bitte in configuration.yaml einfuegen:\n\n"
+            "rest:\n"
+            "  - resource: http://localhost:8502/api/status\n"
+            "    scan_interval: 300\n"
+            "    sensor:\n"
+            "      - name: Trading Open Trades\n"
+            "        value_template: \"{{ value_json.open_trades }}\"\n"
+            "        json_attributes:\n"
+            "          - trades\n"
+            "          - alerts\n"
+            "          - has_critical\n"
+            "          - has_warning\n"
+            "          - cash\n"
+            "          - portfolio\n\n"
+            "rest_command:\n"
+            "  trading_refresh:\n"
+            "    url: http://localhost:8502/api/refresh\n"
+            "    method: POST\n"
+        )
+
+    # Automationen anlegen
+    for auto in automations:
+        auto_id = auto["id"]
+        try:
+            resp = req.post(
+                f"{ha_url}/config/automation/config/{auto_id}",
+                headers=headers, json=auto, timeout=5)
+            if resp.status_code in (200, 201):
+                log.info("HA Automation angelegt: %s", auto["alias"])
+            else:
+                log.warning("HA Automation %s: %s", auto_id, resp.text[:200])
+        except Exception as e:
+            log.warning("HA Automation %s fehlgeschlagen: %s", auto_id, e)
+
+
 def run_api(port: int = 8502):
     """Starte den API-Server."""
+    # HA Automationen beim Start anlegen
+    try:
+        _setup_ha_automations()
+    except Exception as e:
+        log.warning("HA Setup fehlgeschlagen: %s", e)
+
     server = HTTPServer(("0.0.0.0", port), TradingAPIHandler)
     log.info("Trading API gestartet auf Port %d", port)
     server.serve_forever()
