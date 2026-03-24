@@ -115,6 +115,22 @@ def _refresh_trades() -> dict:
     return status
 
 
+def _full_scan() -> dict:
+    """Voller Scan: neue Signale suchen + Trades aktualisieren."""
+    try:
+        from scanner import run_scan
+        import streamlit as st
+        st.cache_data.clear()
+        result = run_scan()
+        n_signals = len(result[0]) if result and len(result) > 0 else 0
+    except Exception as e:
+        log.warning("Full Scan Fehler: %s", e)
+        n_signals = 0
+    status = _get_trade_status()
+    status["scan_signals"] = n_signals
+    return status
+
+
 class TradingAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/status":
@@ -128,6 +144,9 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/api/refresh":
             data = _refresh_trades()
+            self._send_json(data)
+        elif self.path == "/api/scan":
+            data = _full_scan()
             self._send_json(data)
         else:
             self.send_error(404)
@@ -163,25 +182,39 @@ def _setup_ha_automations():
         log.warning("HA API nicht erreichbar: %s", e)
         return
 
-    # Notification Service aus Add-on Config lesen
-    notify_service = "notify.notify"  # Fallback
+    # Config aus Add-on Options lesen
+    notify_service = "notify.notify"
+    full_scan_interval = 60
+    refresh_interval = 15
     try:
         with open("/data/options.json") as f:
             options = json.load(f)
-            notify_service = options.get("notify_service", notify_service)
+            notify_service = options.get("notify_service") or notify_service
+            full_scan_interval = options.get("full_scan_interval_minutes", 60)
+            refresh_interval = options.get("refresh_interval_minutes", 15)
     except FileNotFoundError:
-        log.info("Keine options.json — nutze Fallback Notify-Service")
-    log.info("Notify-Service: %s", notify_service)
+        log.info("Keine options.json — nutze Defaults")
+    log.info("Config: notify=%s, full_scan=%dmin, refresh=%dmin",
+             notify_service, full_scan_interval, refresh_interval)
 
     automations = [
         {
             "id": "trading_refresh_trades",
             "alias": "Trading: Kurse aktualisieren",
-            "description": "Aktualisiert Trades alle 30 Min (08:00-22:00)",
+            "description": f"Aktualisiert Trades alle {refresh_interval} Min (08:00-22:00)",
             "mode": "single",
-            "trigger": [{"platform": "time_pattern", "minutes": "/30"}],
+            "trigger": [{"platform": "time_pattern", "minutes": f"/{refresh_interval}"}],
             "condition": [{"condition": "time", "after": "08:00:00", "before": "22:00:00"}],
             "action": [{"service": "rest_command.trading_refresh"}],
+        },
+        {
+            "id": "trading_full_scan",
+            "alias": "Trading: Voller Scan",
+            "description": f"Sucht neue Signale alle {full_scan_interval} Min (09:00-18:00)",
+            "mode": "single",
+            "trigger": [{"platform": "time_pattern", "minutes": f"/{full_scan_interval}"}],
+            "condition": [{"condition": "time", "after": "09:00:00", "before": "18:00:00"}],
+            "action": [{"service": "rest_command.trading_scan"}],
         },
         {
             "id": "trading_sl_warning",
@@ -263,6 +296,9 @@ def _setup_ha_automations():
             "rest_command:\n"
             "  trading_refresh:\n"
             "    url: http://localhost:8502/api/refresh\n"
+            "    method: POST\n"
+            "  trading_scan:\n"
+            "    url: http://localhost:8502/api/scan\n"
             "    method: POST\n"
         )
 
