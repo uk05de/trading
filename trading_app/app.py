@@ -59,6 +59,33 @@ def _de_date(iso: str) -> str:
         return iso or "–"
 
 
+def _eur(val, sign: bool = False) -> str:
+    """Betrag im deutschen Format: 1.234,56 €. Mit sign=True: +1.234,56 €"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "–"
+    prefix = "+" if sign and val > 0 else ""
+    formatted = f"{abs(val):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if val < 0:
+        return f"-{formatted} €"
+    return f"{prefix}{formatted} €"
+
+
+def _num(val, decimals: int = 2, sign: bool = False, suffix: str = "") -> str:
+    """Zahl im deutschen Format: 1.234,56. Optional mit Vorzeichen und Suffix."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "–"
+    prefix = "+" if sign and val > 0 else ""
+    formatted = f"{abs(val):,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if val < 0:
+        return f"-{formatted}{suffix}"
+    return f"{prefix}{formatted}{suffix}"
+
+
+def _pct(val, sign: bool = True) -> str:
+    """Prozent im deutschen Format: +12,5%"""
+    return _num(val, decimals=1, sign=sign, suffix="%")
+
+
 from ui_colors import color_for_r, style_trades_df as _style_trades_df
 
 
@@ -239,7 +266,7 @@ st.markdown("""
 <style>
     /* Metrics kompakter */
     [data-testid="stMetric"] { padding: 6px 0; }
-    [data-testid="stMetricValue"] { font-size: 1.2rem; }
+    [data-testid="stMetricValue"] { font-size: 1.6rem; }
     [data-testid="stMetricLabel"] { font-size: 0.7rem; }
     [data-testid="stMetricDelta"] { font-size: 0.7rem; }
 
@@ -1646,12 +1673,11 @@ elif st.session_state["page"] == "trades":
     # --- Cash-Übersicht ---
     _ci = get_free_cash()
     _ci_c1, _ci_c2, _ci_c3, _ci_c4, _ci_c5 = st.columns(5)
-    _ci_c1.metric("Freies Cash", f"€{_ci['balance']:,.2f}")
-    _ci_c2.metric("Gebunden", f"€{_ci['locked_cash']:,.2f}")
-    _ci_c3.metric("Portfolio", f"€{_ci['portfolio_value']:,.2f}")
+    _ci_c1.metric("Freies Cash", _eur(_ci['balance']))
+    _ci_c2.metric("Gebunden", _eur(_ci['locked_cash']))
+    _ci_c3.metric("Portfolio", _eur(_ci['portfolio_value']))
     _ci_c4.metric("Offene Pos.", f"{_ci['open_count']} / 5")
-    _ci_c5.metric("Nächster Trade", f"€{_ci['balance'] * 0.20:,.2f}",
-                   delta="20% von frei", delta_color="off")
+    _ci_c5.metric("2% Risiko", _eur(_ci['balance'] * 0.02))
     if _ci["balance"] <= 0 and _ci["open_count"] == 0:
         st.info("Noch keine Buchungen vorhanden. Gehe zu **Konto** um deine erste Einzahlung zu buchen.")
     st.divider()
@@ -2101,10 +2127,10 @@ elif st.session_state["page"] == "konto":
     # --- Übersicht ---
     _ki = get_free_cash()
     _kc1, _kc2, _kc3, _kc4 = st.columns(4)
-    _kc1.metric("Freies Cash", f"€{_ki['balance']:,.2f}")
-    _kc2.metric("In Positionen", f"€{_ki['locked_cash']:,.2f}")
-    _kc3.metric("Portfolio-Wert", f"€{_ki['portfolio_value']:,.2f}")
-    _kc4.metric("Nächster Trade (20%)", f"€{_ki['balance'] * 0.20:,.2f}")
+    _kc1.metric("Freies Cash", _eur(_ki['balance']))
+    _kc2.metric("In Positionen", _eur(_ki['locked_cash']))
+    _kc3.metric("Portfolio-Wert", _eur(_ki['portfolio_value']))
+    _kc4.metric("2% Risiko", _eur(_ki['balance'] * 0.02))
     st.divider()
 
     # --- Neue Buchung ---
@@ -2149,7 +2175,7 @@ elif st.session_state["page"] == "konto":
             amount=_db_amount,
             description=_desc,
         )
-        st.success(f"{_buch_type} über €{abs(_db_amount):,.2f} gebucht.")
+        st.success(f"{_buch_type} über {_eur(abs(_db_amount))} gebucht.")
         st.rerun()
 
     # Korrektur-Hinweis
@@ -2183,11 +2209,11 @@ elif st.session_state["page"] == "konto":
             "correction": "Korrektur",
         }
         _type_colors = {
-            "deposit": "#4CAF50",
-            "withdrawal": "#F44336",
-            "trade_buy": "#FF9800",
-            "trade_sell": "#2196F3",
-            "correction": "#9C27B0",
+            "deposit": "green",
+            "withdrawal": "red",
+            "trade_buy": "orange",
+            "trade_sell": "blue",
+            "correction": "violet",
         }
 
         _entry_rows = []
@@ -2216,8 +2242,8 @@ elif st.session_state["page"] == "konto":
             _cols[0].markdown(f"`{row['Datum']}`")
             _cols[1].markdown(f":{_color}[**{row['Typ']}**]")
             _cols[2].markdown(row["Beschreibung"])
-            _cols[3].markdown(f"**{_sign}€{row['Betrag']:,.2f}**")
-            _cols[4].markdown(f"€{row['Saldo']:,.2f}")
+            _cols[3].markdown(f"**{_eur(row['Betrag'], sign=True)}**")
+            _cols[4].markdown(_eur(row['Saldo']))
             # Lösch-Button nur für manuelle Einträge
             if row["_type"] in ("deposit", "withdrawal", "correction"):
                 if _cols[5].button("X", key=f"del_ledger_{row['id']}", type="tertiary"):
