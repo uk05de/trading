@@ -1231,6 +1231,9 @@ def page_empfehlungen():
         if not _all_signals:
             st.info("Keine Pattern-Signale in den letzten 10 Tagen gefunden. Scan starten!")
         if _all_signals:
+            from db import get_signal_persistence
+            _persistence = get_signal_persistence(lookback_days=10)
+
             results_df = pd.DataFrame(_all_signals).rename(columns={
                 "ticker": "Ticker", "name": "Name", "direction": "Richtung",
                 "score": "Score", "entry": "Entry", "pattern": "Pattern",
@@ -1254,13 +1257,24 @@ def page_empfehlungen():
                     results_df["Sparte"] = results_df["Ticker"].map(get_sector)
                 if "Index" not in results_df.columns:
                     results_df["Index"] = results_df["Ticker"].map(get_index)
+                # Persistenz (Tage) und Rang berechnen
+                results_df["Tage"] = results_df.apply(
+                    lambda r: _persistence.get((r["Ticker"], r["Pattern"]), 1), axis=1)
+                # Rang = Score + Persistenz × 0.2 (normiert auf Score-Skala)
+                _score_max = results_df["Score"].max() or 1
+                results_df["Rang"] = (
+                    results_df["Score"] / _score_max * 0.5
+                    + results_df["Tage"] * 0.2
+                ).round(2)
             if "Entry" in results_df.columns and "Stop-Loss" in results_df.columns:
                 results_df["SL-Dist%"] = ((results_df["Entry"] - results_df["Stop-Loss"]).abs()
                                            / results_df["Entry"] * 100).round(1)
-            # Datum ins deutsche Format
             if "Datum" in results_df.columns:
                 results_df["Datum"] = results_df["Datum"].apply(_de_date)
-            results_df = results_df.sort_values("Score", ascending=False)
+            results_df = results_df.sort_values("Rang", ascending=False)
+            # Pro Ticker nur das neueste Signal behalten
+            if "Ticker" in results_df.columns and "Datum" in results_df.columns:
+                results_df = results_df.drop_duplicates(subset=["Ticker", "Pattern"], keep="first")
             st.session_state["scan_results"] = results_df
 
     # Datenstand immer in Sidebar (aus DB)
@@ -1426,7 +1440,7 @@ def page_empfehlungen():
         _avail_indices = sorted(results_df["Index"].dropna().unique()) if "Index" in results_df.columns else []
 
         _age_options = {"Heute": 0, "1 Tag": 1, "2 Tage": 2, "3 Tage": 3, "5 Tage": 5, "Alle": 10}
-        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        filter_col1, filter_col2 = st.columns(2)
         with filter_col1:
             _age_label = st.selectbox(
                 "Signale seit", options=list(_age_options.keys()),
@@ -1438,30 +1452,25 @@ def page_empfehlungen():
                 placeholder="Alle Sparten",
                 key="flt_sector",
             )
-        with filter_col3:
-            min_score = st.number_input("Min. Score", value=0, min_value=0,
-                                        max_value=100, step=5, key="flt_score")
 
         _df = results_df.copy()
 
         # Alter-Filter
         _age_days = _age_options[_age_label]
         if _age_days < 10 and "Datum" in _df.columns:
-            _cutoff = (dt.date.today() - dt.timedelta(days=_age_days)).strftime("%d.%m.%Y")
-            # Datum ist im Format DD.MM.YYYY, zurück parsen
             _df["_date_sort"] = pd.to_datetime(_df["Datum"], format="%d.%m.%Y", errors="coerce")
             _cutoff_dt = dt.datetime.combine(dt.date.today() - dt.timedelta(days=_age_days), dt.time())
-            _mask = (_df["Score"].abs() >= min_score) & (_df["_date_sort"] >= _cutoff_dt)
+            _mask = _df["_date_sort"] >= _cutoff_dt
         else:
-            _mask = (_df["Score"].abs() >= min_score)
+            _mask = pd.Series(True, index=_df.index)
 
         if sector_filter and "Sparte" in _df.columns:
             _mask = _mask & _df["Sparte"].isin(sector_filter)
         filtered = _df[_mask].copy()
 
-        # Nach Score sortieren (beste zuerst)
-        if not filtered.empty and "Score" in filtered.columns:
-            filtered = filtered.sort_values("Score", ascending=False)
+        # Nach Rang sortieren (beste zuerst)
+        if not filtered.empty and "Rang" in filtered.columns:
+            filtered = filtered.sort_values("Rang", ascending=False)
 
         # --- Recommendations table ---
         if filtered.empty:
@@ -1470,7 +1479,7 @@ def page_empfehlungen():
             display_cols = [
                 "Datum", "Name", "Index", "Pattern", "Richtung",
                 "Entry", "Stop-Loss", "Ziel", "SL-Dist%",
-                "Score", "ADX", "RSI", "ATR%",
+                "Rang", "Tage", "ADX", "RSI",
             ]
             display = filtered[[c for c in display_cols if c in filtered.columns]].copy()
 

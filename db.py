@@ -975,6 +975,28 @@ def get_trade_stats() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Signal-Persistenz
+# ---------------------------------------------------------------------------
+
+def get_signal_persistence(lookback_days: int = 10) -> dict[str, int]:
+    """Zaehle an wie vielen verschiedenen Tagen jedes Ticker+Pattern Signal erschien.
+
+    Returns: {(ticker, pattern): anzahl_tage}
+    """
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=lookback_days)).isoformat()
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT ticker, pattern, COUNT(DISTINCT date) as tage "
+        "FROM signals WHERE date >= ? AND pattern IS NOT NULL "
+        "GROUP BY ticker, pattern",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return {(r["ticker"], r["pattern"]): r["tage"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
 # Trade Alerts (Notification-Tracking)
 # ---------------------------------------------------------------------------
 
