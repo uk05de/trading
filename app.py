@@ -1287,14 +1287,13 @@ def page_empfehlungen():
         except (ValueError, TypeError):
             return ts_str
 
-    from db import _connect as _db_connect
+    from db import _connect as _db_connect, get_setting
     try:
         _conn = _db_connect()
         _sig_ts = _conn.execute(
             "SELECT MAX(created_at) FROM signals").fetchone()[0]
-        _trade_ts = _conn.execute(
-            "SELECT MAX(created_at) FROM trades WHERE status = 'OPEN'").fetchone()[0]
         _conn.close()
+        _trade_ts = get_setting("last_trade_refresh")
         st.sidebar.caption("**Datenstand:**")
         st.sidebar.caption(f"Signale: {_fmt_db_ts(_sig_ts)}")
         if _trade_ts:
