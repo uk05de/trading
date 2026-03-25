@@ -1383,8 +1383,7 @@ def page_empfehlungen():
                     _tt = f"{_n} Titel · " if _n > 1 else ""
                     html += (
                         f'<div class="sector-tile" style="background:{_bg}; border-radius:8px; padding:8px 10px; '
-                        f'text-align:center; border:1px solid #555; '
-                        f'flex:1 1 calc(20% - 6px); min-width:80px;" '
+                        f'text-align:center;flex:1 1 calc(20% - 6px); min-width:80px;" '
                         f'title="{_tt}5d: {data["avg_5d"]:+.1f}% · 14d: {data["avg_14d"]:+.1f}%">'
                         f'<div style="font-size:0.75em; color:#ccc;">{_label}</div>'
                         f'<div style="font-size:1.3em; font-weight:bold;">{data["arrow"]} {_score:+.0f}</div>'
@@ -1532,7 +1531,7 @@ def page_empfehlungen():
                 "Name": st.column_config.TextColumn("Name", disabled=True),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             key="fail_editor",
         )
         _fc1, _fc2 = st.columns([1, 4])
@@ -1872,7 +1871,7 @@ def page_trades():
                         "WR": f"{stats['wr']:.0f}%",
                         "Ø Return": f"{stats['avg_return']:+.1f}%",
                     })
-                st.dataframe(pd.DataFrame(_pat_rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(_pat_rows), hide_index=True, width="stretch")
 
             if _analytics["sector_stats"]:
                 st.markdown("**Sektor-Performance (Live):**")
@@ -1887,7 +1886,7 @@ def page_trades():
                             "Ø Return": f"{stats['avg_return']:+.1f}%",
                         })
                 if _sec_rows:
-                    st.dataframe(pd.DataFrame(_sec_rows), hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(_sec_rows), hide_index=True, width="stretch")
 
         with _tab_timing:
             _tt1, _tt2, _tt3 = st.columns(3)
@@ -2134,7 +2133,7 @@ def page_konto():
         _sel = st.dataframe(
             _show_df.style.apply(_style_ledger, axis=1),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             height=min(45 * len(_show_df) + 50, 400),
             on_select="rerun",
             selection_mode="single-row",

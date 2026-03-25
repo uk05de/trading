@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 def _get_trade_status() -> dict:
     """Berechne aktuellen Trade-Status fuer HA Sensoren."""
     from db import get_trades, get_free_cash
-    from ko_calc import stock_to_product
+    from ko_calc import calc_profit_r
 
     open_trades = get_trades(status="OPEN")
     cash = get_free_cash()
@@ -28,71 +28,46 @@ def _get_trade_status() -> dict:
     alerts = []
 
     for t in open_trades:
-        ko = t.get("ko_level")
-        bv = t.get("bv") or 1.0
-        d = t["direction"]
-        entry_stock = t["entry_price"]
-        cur_stock = t.get("current_price") or entry_stock
-        sl = t.get("stop_loss")
-        bid = t.get("product_bid")
-
-        # Profit R berechnen
-        profit_r = None
-        if sl and ko and entry_stock:
-            ep = stock_to_product(entry_stock, ko, d, bv)
-            sp = stock_to_product(sl, ko, d, bv)
-            cp = bid if bid else stock_to_product(cur_stock, ko, d, bv)
-            risk = abs(ep - sp)
-            profit = cp - ep
-            profit_r = round(profit / risk, 2) if risk > 0 else None
+        profit_r = calc_profit_r(t)
 
         trade_info = {
             "id": t["id"],
             "ticker": t["ticker"],
             "name": t["name"],
-            "direction": d,
+            "direction": t["direction"],
             "profit_r": profit_r,
-            "product_bid": bid,
-            "entry_price": entry_stock,
-            "current_price": cur_stock,
-            "stop_loss": sl,
+            "product_bid": t.get("product_bid"),
+            "entry_price": t["entry_price"],
+            "current_price": t.get("current_price") or t["entry_price"],
+            "stop_loss": t.get("stop_loss"),
             "target": t.get("target"),
         }
         trades.append(trade_info)
 
-        # Alerts
         if profit_r is not None:
             if profit_r <= -1.0:
                 alerts.append({
-                    "type": "sl_breach",
-                    "severity": "critical",
+                    "type": "sl_breach", "severity": "critical",
                     "message": f"{t['name']}: SL DURCHBROCHEN ({profit_r:+.2f}R)",
-                    "trade_id": t["id"],
-                    "profit_r": profit_r,
+                    "trade_id": t["id"], "profit_r": profit_r,
                 })
             elif profit_r <= -0.8:
                 alerts.append({
-                    "type": "sl_warning",
-                    "severity": "warning",
+                    "type": "sl_warning", "severity": "warning",
                     "message": f"{t['name']}: Nahe SL ({profit_r:+.2f}R)",
-                    "trade_id": t["id"],
-                    "profit_r": profit_r,
+                    "trade_id": t["id"], "profit_r": profit_r,
                 })
             elif profit_r >= 2.0:
                 alerts.append({
-                    "type": "target_hit",
-                    "severity": "info",
+                    "type": "target_hit", "severity": "info",
                     "message": f"{t['name']}: TARGET erreicht ({profit_r:+.2f}R)",
-                    "trade_id": t["id"],
-                    "profit_r": profit_r,
+                    "trade_id": t["id"], "profit_r": profit_r,
                 })
             elif profit_r >= 1.5:
                 alerts.append({
-                    "type": "target_near",
-                    "severity": "info",
+                    "type": "target_near", "severity": "info",
                     "message": f"{t['name']}: Nahe Target ({profit_r:+.2f}R)",
-                    "trade_id": t["id"],
-                    "profit_r": profit_r,
+                    "trade_id": t["id"], "profit_r": profit_r,
                 })
 
     return {
@@ -112,6 +87,15 @@ def _refresh_trades() -> dict:
     n = refresh_open_trades()
     status = _get_trade_status()
     status["refreshed"] = n
+
+    # Notifications pruefen
+    try:
+        from notifications import check_and_notify, cleanup_closed_alerts
+        check_and_notify()
+        cleanup_closed_alerts()
+    except Exception as e:
+        log.warning("Notification-Check fehlgeschlagen: %s", e)
+
     return status
 
 
@@ -145,6 +129,13 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
         if self.path == "/api/refresh":
             data = _refresh_trades()
             self._send_json(data)
+        elif self.path == "/api/evening-summary":
+            try:
+                from notifications import send_evening_summary
+                send_evening_summary()
+                self._send_json({"status": "ok"})
+            except Exception as e:
+                self._send_json({"error": str(e)})
         elif self.path == "/api/scan":
             data = _full_scan()
             self._send_json(data)
@@ -201,7 +192,8 @@ def _setup_ha_automations():
         {
             "id": "trading_refresh_trades",
             "alias": "Trading: Kurse aktualisieren",
-            "description": f"Aktualisiert Trades alle {refresh_interval} Min (08:00-22:00)",
+            "description": f"Aktualisiert Trades alle {refresh_interval} Min (08:00-22:00). "
+                           "Notifications werden direkt vom API-Server gesendet.",
             "mode": "single",
             "trigger": [{"platform": "time_pattern", "minutes": f"/{refresh_interval}"}],
             "condition": [{"condition": "time", "after": "08:00:00", "before": "22:00:00"}],
@@ -212,66 +204,29 @@ def _setup_ha_automations():
             "alias": "Trading: Voller Scan",
             "description": f"Sucht neue Signale alle {full_scan_interval} Min (09:00-18:00)",
             "mode": "single",
-            "trigger": [{"platform": "time_pattern", "minutes": f"/{full_scan_interval}"}],
+            "trigger": [{"platform": "time_pattern",
+                         **({"hours": f"/{full_scan_interval // 60}"} if full_scan_interval >= 60
+                            else {"minutes": f"/{full_scan_interval}"})}],
             "condition": [{"condition": "time", "after": "09:00:00", "before": "18:00:00"}],
             "action": [{"service": "rest_command.trading_scan"}],
         },
         {
-            "id": "trading_sl_warning",
-            "alias": "Trading: SL Warnung",
-            "description": "Notification wenn ein Trade nahe am SL ist",
+            "id": "trading_evening_summary",
+            "alias": "Trading: Abend-Zusammenfassung",
+            "description": "Taegliche Zusammenfassung aller offenen Positionen um 18:00",
             "mode": "single",
-            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
-            "condition": [{
-                "condition": "template",
-                "value_template": "{{ state_attr('sensor.trading_open_trades', 'has_warning') == true }}"
-            }],
-            "action": [{
-                "service": notify_service,
-                "data": {
-                    "title": "⚠️ Trading: SL Warnung",
-                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.severity in ['warning','critical'] %}{{ a.message }}\n{% endif %}{% endfor %}"
-                }
-            }],
-        },
-        {
-            "id": "trading_sl_breach",
-            "alias": "Trading: SL Durchbrochen",
-            "description": "Kritische Notification wenn SL durchbrochen",
-            "mode": "single",
-            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
-            "condition": [{
-                "condition": "template",
-                "value_template": "{{ state_attr('sensor.trading_open_trades', 'has_critical') == true }}"
-            }],
-            "action": [{
-                "service": notify_service,
-                "data": {
-                    "title": "🔴 TRADING: SL DURCHBROCHEN",
-                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.severity == 'critical' %}{{ a.message }}\n{% endif %}{% endfor %}",
-                    "data": {"push": {"sound": {"name": "default", "critical": 1}}}
-                }
-            }],
-        },
-        {
-            "id": "trading_target_hit",
-            "alias": "Trading: Target erreicht",
-            "description": "Notification wenn Target erreicht",
-            "mode": "single",
-            "trigger": [{"platform": "state", "entity_id": "sensor.trading_open_trades"}],
-            "condition": [{
-                "condition": "template",
-                "value_template": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') | default([]) %}{% if a.type == 'target_hit' %}true{% endif %}{% endfor %}"
-            }],
-            "action": [{
-                "service": notify_service,
-                "data": {
-                    "title": "🎯 Trading: Target erreicht!",
-                    "message": "{% for a in state_attr('sensor.trading_open_trades', 'alerts') %}{% if a.type == 'target_hit' %}{{ a.message }}\n{% endif %}{% endfor %}"
-                }
-            }],
+            "trigger": [{"platform": "time", "at": "18:00:00"}],
+            "action": [{"service": "rest_command.trading_evening_summary"}],
         },
     ]
+
+    # Alte Notification-Automationen entfernen (jetzt vom API-Server gehandhabt)
+    for old_id in ("trading_sl_warning", "trading_sl_breach", "trading_target_hit"):
+        try:
+            req.delete(f"{ha_url}/config/automation/config/{old_id}",
+                       headers=headers, timeout=5)
+        except Exception:
+            pass
 
     # REST Sensor + Command in HA anlegen
     # Das geht leider nicht per API — muss in configuration.yaml
@@ -299,6 +254,9 @@ def _setup_ha_automations():
             "    method: POST\n"
             "  trading_scan:\n"
             "    url: http://localhost:8502/api/scan\n"
+            "    method: POST\n"
+            "  trading_evening_summary:\n"
+            "    url: http://localhost:8502/api/evening-summary\n"
             "    method: POST\n"
         )
 
