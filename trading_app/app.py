@@ -1094,7 +1094,21 @@ def show_signal_dialog(ticker: str):
                     if _auto_best:
                         _render_trade_form(_auto_best, "auto")
                     else:
-                        st.warning("Keine passenden KO-Zertifikate gefunden. Wechsel zu 'Manuell'.")
+                        _ko_info = calc_ideal_ko(_sig_price, _sig_sl, _sig_dir)
+                        if "error" not in _ko_info:
+                            _typ = "Bull/Long" if _sig_dir == "LONG" else "Bear/Short"
+                            st.warning("Keine passenden KO-Zertifikate gefunden. "
+                                       "Suche manuell auf Trade Republic oder wechsel zu 'Manuell'.")
+                            st.markdown(
+                                f"**Suchparameter:**\n"
+                                f"- Typ: **Knock-Out {_typ}**\n"
+                                f"- KO-Schwelle: **{_ko_info['ko_range_min']:.2f} – {_ko_info['ko_range_max']:.2f} EUR** "
+                                f"(ideal: {_ko_info['ko_ideal']:.2f})\n"
+                                f"- Hebel: **~{_ko_info['leverage']:.0f}x**\n"
+                                f"- Entry: {_sig_price:.2f} EUR · SL: {_sig_sl:.2f} EUR · Target: {_sig_tgt:.2f} EUR"
+                            )
+                        else:
+                            st.warning("Keine passenden KO-Zertifikate gefunden. Wechsel zu 'Manuell'.")
 
                 # ── TAB: Manuell ──────────────────────────
                 with _sub_manual:
@@ -1144,6 +1158,7 @@ def show_signal_dialog(ticker: str):
                         st.warning("Keine Ergebnisse.")
 
                     # Fallback: ISIN Lookup
+                    _isin_state_key = f"ko_isin_{ticker}"
                     with st.expander("Per ISIN suchen"):
                         _ic1, _ic2 = st.columns([2, 1])
                         with _ic1:
@@ -1156,7 +1171,7 @@ def show_signal_dialog(ticker: str):
                             with st.spinner("Lade..."):
                                 _mp = lookup_isin(_m_isin)
                             if _mp:
-                                _selected = {
+                                st.session_state[_isin_state_key] = {
                                     "isin": _mp["isin"], "wkn": _mp.get("wkn", ""),
                                     "emittent": _mp.get("emittent", ""),
                                     "ko_level": _mp.get("ko_level", 0),
@@ -1170,6 +1185,10 @@ def show_signal_dialog(ticker: str):
                                 st.success(f"Geladen: {_mp.get('name')}")
                             else:
                                 st.error("Nicht gefunden.")
+
+                    # ISIN-Ergebnis aus Session State laden (bleibt über Reruns erhalten)
+                    if _isin_state_key in st.session_state:
+                        _selected = st.session_state[_isin_state_key]
 
                     if _selected:
                         st.divider()
