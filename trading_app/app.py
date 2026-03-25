@@ -1214,37 +1214,28 @@ def page_empfehlungen():
     # Signale immer aus DB laden (nicht aus session_state cachen,
     # damit alle Sessions den gleichen Stand sehen)
     if results_df.empty:
-        # Letzte 5 Handelstage durchsuchen
-        db_signals = []
+        _open_tickers = {t["ticker"] for t in get_trades(status="OPEN")}
+
+        # Alle Signale der letzten 10 Tage laden
+        _all_signals = []
         _search_date = dt.date.today()
-        _days_checked = 0
-        _signal_date_str = None
-        while _days_checked < 10 and not db_signals:
+        for _d in range(10):
             _date_str = _search_date.isoformat()
             _day_signals = get_signals(date=_date_str, limit=500)
-            # Nur Pattern-Signale
-            _day_patterns = [s for s in _day_signals
-                             if s.get("pattern")]
-            if _day_patterns:
-                db_signals = _day_patterns
-                _signal_date_str = _date_str
+            _day_patterns = [s for s in _day_signals if s.get("pattern")]
+            # Ticker mit offenen Trades ausfiltern
+            _day_patterns = [s for s in _day_patterns if s["ticker"] not in _open_tickers]
+            _all_signals.extend(_day_patterns)
             _search_date -= dt.timedelta(days=1)
-            _days_checked += 1
 
-        if not db_signals:
-            st.info("📊 **Keine Pattern-Signale** in den letzten 10 Tagen gefunden. Scan starten!")
-        elif _signal_date_str and _signal_date_str != dt.date.today().isoformat():
-            st.info(f"📊 **Heute keine neuen Signale.** Zeige letzte Pattern-Signale vom **{_signal_date_str}**.")
-        if db_signals:
-            _latest_ts = max((s.get("created_at", "") for s in db_signals), default="")
-            _open_tickers = {t["ticker"] for t in get_trades(status="OPEN")}
-            if _open_tickers:
-                db_signals = [s for s in db_signals if s["ticker"] not in _open_tickers]
-            results_df = pd.DataFrame(db_signals).rename(columns={
+        if not _all_signals:
+            st.info("Keine Pattern-Signale in den letzten 10 Tagen gefunden. Scan starten!")
+        if _all_signals:
+            results_df = pd.DataFrame(_all_signals).rename(columns={
                 "ticker": "Ticker", "name": "Name", "direction": "Richtung",
                 "score": "Score", "entry": "Entry", "pattern": "Pattern",
                 "target": "Ziel", "stop_loss": "Stop-Loss",
-                "risk_reward": "R/R",
+                "risk_reward": "R/R", "date": "Datum",
                 "detail": "Detail",
             })
             _db_col_map = {
@@ -1263,10 +1254,12 @@ def page_empfehlungen():
                     results_df["Sparte"] = results_df["Ticker"].map(get_sector)
                 if "Index" not in results_df.columns:
                     results_df["Index"] = results_df["Ticker"].map(get_index)
-            # SL-Dist% berechnen
             if "Entry" in results_df.columns and "Stop-Loss" in results_df.columns:
                 results_df["SL-Dist%"] = ((results_df["Entry"] - results_df["Stop-Loss"]).abs()
                                            / results_df["Entry"] * 100).round(1)
+            # Datum ins deutsche Format
+            if "Datum" in results_df.columns:
+                results_df["Datum"] = results_df["Datum"].apply(_de_date)
             results_df = results_df.sort_values("Score", ascending=False)
             st.session_state["scan_results"] = results_df
 
@@ -1432,23 +1425,36 @@ def page_empfehlungen():
         _avail_sectors = sorted(results_df["Sparte"].dropna().unique()) if "Sparte" in results_df.columns else []
         _avail_indices = sorted(results_df["Index"].dropna().unique()) if "Index" in results_df.columns else []
 
-        filter_col1, filter_col2 = st.columns(2)
+        _age_options = {"Heute": 0, "1 Tag": 1, "2 Tage": 2, "3 Tage": 3, "5 Tage": 5, "Alle": 10}
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
         with filter_col1:
+            _age_label = st.selectbox(
+                "Signale seit", options=list(_age_options.keys()),
+                key="flt_age",
+            )
+        with filter_col2:
             sector_filter = st.multiselect(
                 "Sparte", _avail_sectors, default=[],
                 placeholder="Alle Sparten",
                 key="flt_sector",
             )
-        with filter_col2:
+        with filter_col3:
             min_score = st.number_input("Min. Score", value=0, min_value=0,
                                         max_value=100, step=5, key="flt_score")
 
         _df = results_df.copy()
 
-        # Sortierung nach Combo-Score (absteigend)
-        # Score kommt direkt aus dem Scanner (ADX + SL-Dist)
+        # Alter-Filter
+        _age_days = _age_options[_age_label]
+        if _age_days < 10 and "Datum" in _df.columns:
+            _cutoff = (dt.date.today() - dt.timedelta(days=_age_days)).strftime("%d.%m.%Y")
+            # Datum ist im Format DD.MM.YYYY, zurück parsen
+            _df["_date_sort"] = pd.to_datetime(_df["Datum"], format="%d.%m.%Y", errors="coerce")
+            _cutoff_dt = dt.datetime.combine(dt.date.today() - dt.timedelta(days=_age_days), dt.time())
+            _mask = (_df["Score"].abs() >= min_score) & (_df["_date_sort"] >= _cutoff_dt)
+        else:
+            _mask = (_df["Score"].abs() >= min_score)
 
-        _mask = (_df["Score"].abs() >= min_score)
         if sector_filter and "Sparte" in _df.columns:
             _mask = _mask & _df["Sparte"].isin(sector_filter)
         filtered = _df[_mask].copy()
@@ -1462,7 +1468,7 @@ def page_empfehlungen():
             st.info("Keine Ergebnisse für die gewählten Filter.")
         else:
             display_cols = [
-                "Ticker", "Name", "Index", "Pattern", "Richtung",
+                "Datum", "Name", "Index", "Pattern", "Richtung",
                 "Entry", "Stop-Loss", "Ziel", "SL-Dist%",
                 "Score", "ADX", "RSI", "ATR%",
             ]
