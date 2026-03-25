@@ -702,7 +702,7 @@ def render_position_metrics(trades: list[dict], kp: str = ""):
         c2.metric("Erlös" if _is_closed else "Wert", f"{total_value:.2f} €")
         c3.metric("P/L €", f"{pnl_abs:+.2f} €")
         c4.metric("P/L %", f"{pnl_pct:+.1f}%")
-        c5.metric("Profit R", "–")
+        c5.metric("Profit R", f"{_profit_r:+.2f} R" if _profit_r is not None else "–")
 
 
 
