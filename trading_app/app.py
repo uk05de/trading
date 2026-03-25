@@ -1536,8 +1536,8 @@ def page_empfehlungen():
             # Signal dialog trigger from recommendations table
             if selection and selection.selection and selection.selection.rows:
                 clicked_idx = selection.selection.rows[0]
-                clicked_ticker = display.iloc[clicked_idx]["Ticker"]
-                clicked_name = display.iloc[clicked_idx]["Name"]
+                clicked_ticker = filtered.iloc[clicked_idx]["Ticker"]
+                clicked_name = filtered.iloc[clicked_idx]["Name"]
                 _prev = st.session_state.get("_prev_sig_sel")
                 if _prev != clicked_ticker:
                     st.session_state["_prev_sig_sel"] = clicked_ticker
