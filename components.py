@@ -673,26 +673,19 @@ def render_position_metrics(trades: list[dict], kp: str = ""):
     pnl_abs = total_value - total_invest - total_fees
     pnl_pct = pnl_abs / total_invest * 100 if total_invest > 0 else 0
 
-    # Profit in R berechnen
-    _orig_sl = first.get("stop_loss")
-    _entry_stock = first["entry_price"]
-    _cur_stock = first.get("current_price") or _entry_stock
-    _dir = first["direction"]
+    # Profit R: gewichteter Durchschnitt ueber alle Trades der Position
+    from ko_calc import calc_profit_r
     _profit_r = None
-    if _orig_sl and _entry_stock and _orig_sl > 0:
-        _ko = first.get("ko_level")
-        _bv = first.get("bv") or 1.0
-        if _ko:
-            _sl_p = stock_to_product(_orig_sl, _ko, _dir, _bv)
-            _entry_p = stock_to_product(_entry_stock, _ko, _dir, _bv)
-            _cur_p_calc = total_value / total_size if total_size else 0
-            _risk_p = abs(_entry_p - _sl_p)
-            _prof_p = _cur_p_calc - _entry_p
-            _profit_r = round(_prof_p / _risk_p, 2) if _risk_p > 0 else None
-        else:
-            _risk = abs(_entry_stock - _orig_sl)
-            _prof = (_cur_stock - _entry_stock) if _dir == "LONG" else (_entry_stock - _cur_stock)
-            _profit_r = round(_prof / _risk, 2) if _risk > 0 else None
+    _weighted_r = 0.0
+    _weight_total = 0.0
+    for t in trades:
+        _r = calc_profit_r(t)
+        if _r is not None:
+            _w = t.get("size") or 1
+            _weighted_r += _r * _w
+            _weight_total += _w
+    if _weight_total > 0:
+        _profit_r = round(_weighted_r / _weight_total, 2)
 
     # Einheitliche Farbe basierend auf Profit R
     from ui_colors import color_for_r as _color_for_r

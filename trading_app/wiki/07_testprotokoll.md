@@ -348,6 +348,52 @@ Ab w=0.2 flacht der Effekt ab (0.3/0.5 kaum besser). Lookback 10 > 15 > 5.
 **Entscheidung:** Signal-Persistenz mit LB=10, w=0.2 ins Ranking aufnehmen.
 Reports: results/2026-03-25_1213_persistence_test/
 
+### Test 10: Breakeven-Stop nach Recovery (2026-03-25)
+
+Hypothese: Wenn ein Trade erst ins Minus faellt und dann zurueck ueber Entry kommt,
+SL auf Entry setzen (Breakeven). Der Trade hat Schwaeche gezeigt, also absichern.
+
+Trigger: Kurs war X% unter Entry, dann Close zurueck ueber Entry → SL = Entry.
+
+| Konfiguration | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| **Kein Breakeven (Baseline)** | **309** | **46.3%** | **+300%** | **23.6%** | **12.7** |
+| Recovery BE +5% | 356 | 41.0% | +272% | 21.8% | 12.5 |
+| Recovery BE +10% | 312 | 45.2% | +264% | 23.5% | 11.2 |
+| Recovery BE +7% | 329 | 43.8% | +241% | 22.0% | 11.0 |
+| Recovery BE +3% | 424 | 33.7% | +164% | 26.3% | 6.2 |
+| Recovery BE +2% | 499 | 27.1% | +122% | 26.3% | 4.7 |
+
++5% hat niedrigsten DD (21.8%), aber -28% weniger Rendite. Trades die zurueckkommen
+werden zu oft beim Breakeven ausgestoppt statt das Target zu erreichen.
+
+**Entscheidung:** Verworfen. Trades brauchen den originalen SL um zum Target zu atmen.
+Reports: results/2026-03-25_1509_breakeven_test/
+
+### Test 11: Top-1 pro Tag vs. parallele Positionen (2026-03-25)
+
+Frage: Wenn ich nur den besten Trade pro Tag nehme (nach Persistenz-Ranking),
+wie performt das vs. mehrere parallele Positionen?
+
+Setup: Pattern Top2, Fix R/R=2.0, SL >= 5%, Risk 2% Cash, max €2.500,
+persistence_score (LB10, w=0.2).
+
+| Konfiguration | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| Top-1/Tag, unbegr. Pos. | 421 | 43.0% | +243% | **21.2%** | 11.5 |
+| Top-2/Tag, unbegr. Pos. | 590 | 41.9% | +311% | 30.4% | 10.2 |
+| **Alle, max 5 Pos.** | **309** | **46.3%** | **+300%** | 23.6% | **12.7** |
+| Alle, unbegrenzt | 727 | 42.2% | +376% | 32.5% | 11.6 |
+
+Top-1/Tag hat 565 Signale aber nur 421 Trades (144 wegen Ticker-Duplikat blockiert —
+selber Ticker noch im Trade, Haltedauer ~20 Tage).
+
+Top-1 hat niedrigsten DD (21.2%), aber das Positions-Limit bei "max 5" wirkt als
+natuerlicher Qualitaetsfilter: hoehere WR (46.3%) und beste Effizienz (12.7).
+
+**Entscheidung:** Max 5 parallele Positionen beibehalten. Positions-Limit > Top-N/Tag.
+Reports: results/2026-03-25_1538_top1_per_day/
+
 ---
 
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)

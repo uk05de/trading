@@ -685,6 +685,102 @@ def grid_patterns(verbose: bool = True, report: bool = True) -> list[BacktestRes
     return all_results
 
 
+# ─── Breakeven-Stop Test ─────────────────────────────────────────────────
+
+def test_breakeven(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
+    """
+    Test: SL auf Entry ziehen sobald Kurs X% ueber Entry lag.
+
+    Vergleicht verschiedene Trigger-Schwellen (2%, 3%, 5%, R-basiert)
+    gegen die Baseline ohne Breakeven-Stop.
+    """
+    from bt_signals_patterns import collect_pattern_signals
+
+    WINNER_PATTERNS = ["ema50_bounce", "gap_up_continuation"]
+    force = "--rescan" in sys.argv
+
+    pat_base = preset_baseline_v1()
+    sizing_base = replace(pat_base,
+                          min_invest=25.0,
+                          sizing_method="risk_free", sizing_pct=0.02,
+                          max_invest=2500.0,
+                          pattern_filter=WINNER_PATTERNS,
+                          max_positions=5,
+                          min_sl_dist=0.05,
+                          signal_ranking="persistence_score",
+                          persistence_weight=0.2,
+                          persistence_lookback=10)
+
+    all_results: list[BacktestResult] = []
+    ranking: list[dict] = []
+
+    # Baseline ohne Breakeven
+    if verbose:
+        print(f"\n  Lade Baseline-Signale (kein Breakeven)...")
+    baseline_signals = collect_pattern_signals(
+        replace(pat_base, persistence_lookback=10),
+        target_rr=2.0, force_rescan=force, verbose=verbose)
+
+    if baseline_signals.empty:
+        print("  Keine Signale!")
+        return []
+
+    r_base = simulate(baseline_signals, replace(sizing_base, name="Kein Breakeven (Baseline)"))
+    all_results.append(r_base)
+    ranking.append({"name": r_base.config.name, "trigger": "-",
+                    "trades": r_base.n_trades, "win_rate": r_base.win_rate,
+                    "total_return": r_base.total_return, "max_dd": r_base.max_drawdown,
+                    "efficiency": r_base.efficiency, "end_capital": r_base.end_capital})
+
+    # Breakeven-Varianten
+    for trigger in [2, 3, 5, 7, 10]:
+        if verbose:
+            print(f"\n  Lade Signale (Breakeven bei +{trigger}%)...")
+        signals = collect_pattern_signals(
+            replace(pat_base, persistence_lookback=10),
+            target_rr=2.0, breakeven_pct=trigger,
+            force_rescan=force, verbose=verbose)
+
+        if signals.empty:
+            continue
+
+        name = f"Breakeven bei +{trigger}%"
+        r = simulate(signals, replace(sizing_base, name=name))
+        all_results.append(r)
+        ranking.append({"name": name, "trigger": f"+{trigger}%",
+                        "trades": r.n_trades, "win_rate": r.win_rate,
+                        "total_return": r.total_return, "max_dd": r.max_drawdown,
+                        "efficiency": r.efficiency, "end_capital": r.end_capital})
+
+    # Ranking
+    if verbose and ranking:
+        ranking_df = pd.DataFrame(ranking).sort_values("efficiency", ascending=False)
+        print(f"\n  {'=' * 100}")
+        print(f"  BREAKEVEN-RANKING (nach Effizienz)")
+        print(f"  {'=' * 100}")
+        print(f"  {'#':>3s} {'Konfiguration':>35s} | {'Tr':>4s} {'WR':>6s} | "
+              f"{'Ret':>8s} {'DD':>6s} {'Eff':>5s} | {'Endkap.':>10s}")
+        print(f"  {'─' * 85}")
+
+        for i, (_, row) in enumerate(ranking_df.iterrows()):
+            print(f"  {i+1:>3d} {row['name']:>35s} | {row['trades']:>4.0f} {row['win_rate']:>5.1f}% | "
+                  f"{row['total_return']:>+7.1f}% {row['max_dd']:>5.1f}% {row['efficiency']:>5.1f} | "
+                  f"€{row['end_capital']:>9,.2f}")
+
+    # Report
+    if report and all_results:
+        run_dir = _make_run_dir(BacktestConfig(name="breakeven_test"))
+        generate_compare_report(all_results, run_dir=run_dir)
+        for r in all_results:
+            generate_report(r, run_dir=run_dir, all_results=all_results)
+        if verbose:
+            print(f"\n  Reports: {run_dir}/")
+        import subprocess
+        subprocess.run(["open", str(run_dir / "report.html")])
+
+    return all_results
+
+
 # ─── Persistenz-Test ─────────────────────────────────────────────────────
 
 def test_persistence(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
@@ -836,6 +932,9 @@ def main():
 
     elif "--pattern-grid" in args:
         grid_patterns()
+
+    elif "--breakeven" in args:
+        test_breakeven()
 
     elif "--persistence" in args:
         test_persistence()
