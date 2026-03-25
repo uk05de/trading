@@ -1,0 +1,522 @@
+{
+  "1COV.F": {
+    "entity_value": "12587335",
+    "url_name": "Covestro",
+    "name": "Covestro"
+  },
+  "1U1.DE": {
+    "entity_value": "82080",
+    "url_name": "1-1-AG",
+    "name": "1&1"
+  },
+  "8TRA.DE": {
+    "entity_value": "157127676",
+    "url_name": "TRATON-SE",
+    "name": "Traton"
+  },
+  "ADS.DE": {
+    "entity_value": "36714349",
+    "url_name": "Adidas",
+    "name": "Adidas"
+  },
+  "AFX.DE": {
+    "entity_value": "81599",
+    "url_name": "Carl-Zeiss-Meditec",
+    "name": "Carl Zeiss Meditec"
+  },
+  "AG1.DE": {
+    "entity_value": "176577559",
+    "url_name": "AUTO1-GROUP-SE",
+    "name": "AUTO1 Group"
+  },
+  "AIR.DE": {
+    "entity_value": "98641",
+    "url_name": "Airbus-Group-EADS",
+    "name": "Airbus"
+  },
+  "AIXA.DE": {
+    "entity_value": "21058705",
+    "url_name": "Aixtron",
+    "name": "Aixtron"
+  },
+  "ALV.DE": {
+    "entity_value": "83219",
+    "url_name": "Allianz",
+    "name": "Allianz"
+  },
+  "AMV0.DE": {
+    "entity_value": "303168259",
+    "url_name": "Aumovio",
+    "name": "Aumovio"
+  },
+  "AOF.DE": {
+    "entity_value": "81246",
+    "url_name": "ATOSS-SOFTWARE-AG",
+    "name": "ATOSS Software"
+  },
+  "AT1.DE": {
+    "entity_value": "88983923",
+    "url_name": "AROUNDTOWN-SA",
+    "name": "Aroundtown"
+  },
+  "BAS.DE": {
+    "entity_value": "34694526",
+    "url_name": "BASF",
+    "name": "BASF"
+  },
+  "BAYN.DE": {
+    "entity_value": "25272187",
+    "url_name": "Bayer",
+    "name": "Bayer"
+  },
+  "BC8.DE": {
+    "entity_value": "81470",
+    "url_name": "Bechtle",
+    "name": "Bechtle"
+  },
+  "BEI.DE": {
+    "entity_value": "81500",
+    "url_name": "Beiersdorf",
+    "name": "Beiersdorf"
+  },
+  "BMW.DE": {
+    "entity_value": "81490",
+    "url_name": "BMW",
+    "name": "BMW"
+  },
+  "BNR.DE": {
+    "entity_value": "28975512",
+    "url_name": "Brenntag",
+    "name": "Brenntag"
+  },
+  "BOSS.DE": {
+    "entity_value": "52117218",
+    "url_name": "Hugo-Boss",
+    "name": "Hugo Boss"
+  },
+  "CBK.DE": {
+    "entity_value": "83139",
+    "url_name": "Commerzbank",
+    "name": "Commerzbank"
+  },
+  "COK.DE": {
+    "entity_value": "81945",
+    "url_name": "Cancom",
+    "name": "CANCOM"
+  },
+  "CON.DE": {
+    "entity_value": "81967",
+    "url_name": "Continental",
+    "name": "Continental"
+  },
+  "DB1.DE": {
+    "entity_value": "3459922",
+    "url_name": "Deutsche-Boerse",
+    "name": "Deutsche Börse"
+  },
+  "DBK.DE": {
+    "entity_value": "81348",
+    "url_name": "Deutsche-Bank",
+    "name": "Deutsche Bank"
+  },
+  "DHER.DE": {
+    "entity_value": "123834737",
+    "url_name": "Delivery-Hero",
+    "name": "Delivery Hero"
+  },
+  "DHL.DE": {
+    "entity_value": "82088",
+    "url_name": "Deutsche-Post",
+    "name": "DHL Group"
+  },
+  "DRW3.DE": {
+    "entity_value": "82087",
+    "url_name": "Draegerwerk",
+    "name": "Drägerwerk"
+  },
+  "DTE.DE": {
+    "entity_value": "181029",
+    "url_name": "Deutsche-Telekom",
+    "name": "Deutsche Telekom"
+  },
+  "DTG.DE": {
+    "entity_value": "208894340",
+    "url_name": "Daimler-Truck",
+    "name": "Daimler Truck"
+  },
+  "DWS.DE": {
+    "entity_value": "135650839",
+    "url_name": "DWS-Group",
+    "name": "DWS Group"
+  },
+  "ELG.DE": {
+    "entity_value": "82175",
+    "url_name": "ELMOS-SEMICONDUCTOR-SE",
+    "name": "Elmos Semiconductor"
+  },
+  "ENR.DE": {
+    "entity_value": "180455076",
+    "url_name": "Siemens-Energy",
+    "name": "Siemens Energy"
+  },
+  "EOAN.DE": {
+    "entity_value": "21074892",
+    "url_name": "EON",
+    "name": "E.ON"
+  },
+  "EUZ.DE": {
+    "entity_value": "82161",
+    "url_name": "Eckert-Ziegler",
+    "name": "Eckert & Ziegler"
+  },
+  "EVD.DE": {
+    "entity_value": "81981",
+    "url_name": "Eventim",
+    "name": "CTS Eventim"
+  },
+  "EVK.DE": {
+    "entity_value": "52234470",
+    "url_name": "Evonik",
+    "name": "Evonik"
+  },
+  "EVT.DE": {
+    "entity_value": "82172",
+    "url_name": "Evotec",
+    "name": "Evotec"
+  },
+  "FIE.DE": {
+    "entity_value": "82208",
+    "url_name": "Fielmann",
+    "name": "Fielmann"
+  },
+  "FME.DE": {
+    "entity_value": "82237",
+    "url_name": "Fresenius-Medical-Care",
+    "name": "Fresenius Med. Care"
+  },
+  "FNTN.DE": {
+    "entity_value": "25969984",
+    "url_name": "Freenet",
+    "name": "freenet"
+  },
+  "FPE3.DE": {
+    "entity_value": "202079435",
+    "url_name": "Fuchs-Vorzugsaktien",
+    "name": "Fuchs"
+  },
+  "FRA.DE": {
+    "entity_value": "4411911",
+    "url_name": "Fraport",
+    "name": "Fraport"
+  },
+  "FRE.DE": {
+    "entity_value": "82235",
+    "url_name": "Fresenius",
+    "name": "Fresenius"
+  },
+  "FTK.DE": {
+    "entity_value": "12581625",
+    "url_name": "FLATEXDEGIRO-AG",
+    "name": "flatexDEGIRO"
+  },
+  "G1A.DE": {
+    "entity_value": "82679",
+    "url_name": "GEA-Group",
+    "name": "GEA Group"
+  },
+  "GBF.DE": {
+    "entity_value": "82305",
+    "url_name": "Bilfinger",
+    "name": "Bilfinger"
+  },
+  "HAG.DE": {
+    "entity_value": "181523312",
+    "url_name": "HENSOLDT-AG",
+    "name": "Hensoldt"
+  },
+  "HEI.DE": {
+    "entity_value": "82340",
+    "url_name": "Heidelberg-Materials",
+    "name": "Heidelberg Materials"
+  },
+  "HEN3.DE": {
+    "entity_value": "82344",
+    "url_name": "Henkel",
+    "name": "Henkel"
+  },
+  "HLE.DE": {
+    "entity_value": "83986624",
+    "url_name": "Hella",
+    "name": "Hella"
+  },
+  "HNR1.DE": {
+    "entity_value": "182351",
+    "url_name": "Hannover-Rueck",
+    "name": "Hannover Rück"
+  },
+  "HOT.DE": {
+    "entity_value": "82363",
+    "url_name": "Hochtief",
+    "name": "HOCHTIEF"
+  },
+  "IFX.DE": {
+    "entity_value": "82561",
+    "url_name": "Infineon",
+    "name": "Infineon"
+  },
+  "IOS.DE": {
+    "entity_value": "238536752",
+    "url_name": "IONOS",
+    "name": "IONOS"
+  },
+  "JEN.DE": {
+    "entity_value": "82559",
+    "url_name": "JENOPTIK-AG",
+    "name": "Jenoptik"
+  },
+  "JUN3.DE": {
+    "entity_value": "82546",
+    "url_name": "JUNGHEINRICH-AG",
+    "name": "Jungheinrich"
+  },
+  "KBX.DE": {
+    "entity_value": "12590579",
+    "url_name": "KNORR-BREMSE-AG",
+    "name": "Knorr-Bremse"
+  },
+  "KGX.DE": {
+    "entity_value": "62941193",
+    "url_name": "KION-GROUP-AG",
+    "name": "Kion Group"
+  },
+  "KRN.DE": {
+    "entity_value": "82604",
+    "url_name": "Krones",
+    "name": "Krones"
+  },
+  "KTN.DE": {
+    "entity_value": "25323315",
+    "url_name": "Kontron-AG",
+    "name": "Kontron"
+  },
+  "LEG.DE": {
+    "entity_value": "58320949",
+    "url_name": "LEG-IMMOBILIEN-SE",
+    "name": "LEG Immobilien"
+  },
+  "LHA.DE": {
+    "entity_value": "83184",
+    "url_name": "Lufthansa",
+    "name": "Lufthansa"
+  },
+  "LXS.DE": {
+    "entity_value": "6585500",
+    "url_name": "Lanxess",
+    "name": "Lanxess"
+  },
+  "MBG.DE": {
+    "entity_value": "82840",
+    "url_name": "Mercedes-Benz-Group-Daimler",
+    "name": "Mercedes-Benz"
+  },
+  "MRK.DE": {
+    "entity_value": "82676",
+    "url_name": "Merck",
+    "name": "Merck KGaA"
+  },
+  "MTX.DE": {
+    "entity_value": "12254991",
+    "url_name": "MTU-Aero-Engines",
+    "name": "MTU Aero Engines"
+  },
+  "MUV2.DE": {
+    "entity_value": "83258",
+    "url_name": "Muenchener-Rueck",
+    "name": "Munich Re"
+  },
+  "NA9.DE": {
+    "entity_value": "185491086",
+    "url_name": "NAGARRO-SE",
+    "name": "Nagarro"
+  },
+  "NDA.DE": {
+    "entity_value": "82725",
+    "url_name": "Aurubis",
+    "name": "Aurubis"
+  },
+  "NDX1.DE": {
+    "entity_value": "12107316",
+    "url_name": "Nordex",
+    "name": "Nordex"
+  },
+  "NEM.DE": {
+    "entity_value": "82618",
+    "url_name": "NEMETSCHEK-SE",
+    "name": "Nemetschek"
+  },
+  "OBCK.DE": {
+    "entity_value": "218409049",
+    "url_name": "OTTOBOCK-SE-CO-KGAA",
+    "name": "Ottobock"
+  },
+  "P911.DE": {
+    "entity_value": "231291652",
+    "url_name": "PORSCHE-AG-VZ",
+    "name": "Porsche AG"
+  },
+  "PAH3.DE": {
+    "entity_value": "21178031",
+    "url_name": "Porsche-Automobil-Holding-SE",
+    "name": "Porsche SE"
+  },
+  "PUM.DE": {
+    "entity_value": "82791",
+    "url_name": "Puma",
+    "name": "Puma"
+  },
+  "QIA.DE": {
+    "entity_value": "90268",
+    "url_name": "Qiagen",
+    "name": "Qiagen"
+  },
+  "R3NK.DE": {
+    "entity_value": "255761978",
+    "url_name": "RENK-GROUP-AG",
+    "name": "RENK Group"
+  },
+  "RAA.DE": {
+    "entity_value": "82801",
+    "url_name": "Rational",
+    "name": "Rational"
+  },
+  "RDC.DE": {
+    "entity_value": "114030412",
+    "url_name": "REDCARE-PHARMACY",
+    "name": "Redcare Pharmacy"
+  },
+  "RHM.DE": {
+    "entity_value": "82811",
+    "url_name": "Rheinmetall",
+    "name": "Rheinmetall"
+  },
+  "RRTL.DE": {
+    "entity_value": "86271",
+    "url_name": "RTL",
+    "name": "RTL Group"
+  },
+  "RWE.DE": {
+    "entity_value": "82818",
+    "url_name": "RWE",
+    "name": "RWE"
+  },
+  "S92.DE": {
+    "entity_value": "11435646",
+    "url_name": "SMA-Solar",
+    "name": "SMA Solar"
+  },
+  "SAP.DE": {
+    "entity_value": "82849",
+    "url_name": "SAP",
+    "name": "SAP"
+  },
+  "SAX.DE": {
+    "entity_value": "12176278",
+    "url_name": "Stroeer",
+    "name": "Ströer"
+  },
+  "SDF.DE": {
+    "entity_value": "42809846",
+    "url_name": "K-S",
+    "name": "K+S"
+  },
+  "SHA0.DE": {
+    "entity_value": "97123517",
+    "url_name": "Schaeffler",
+    "name": "Schaeffler"
+  },
+  "SHL.DE": {
+    "entity_value": "134397957",
+    "url_name": "Siemens-Healthineers",
+    "name": "Siemens Healthineers"
+  },
+  "SIE.DE": {
+    "entity_value": "82902",
+    "url_name": "Siemens",
+    "name": "Siemens"
+  },
+  "SMHN.DE": {
+    "entity_value": "43111801",
+    "url_name": "SUSS-MicroTec",
+    "name": "SÜSS MicroTec"
+  },
+  "SRT3.DE": {
+    "entity_value": "82852",
+    "url_name": "Sartorius-AG",
+    "name": "Sartorius"
+  },
+  "SY1.DE": {
+    "entity_value": "15630917",
+    "url_name": "Symrise",
+    "name": "Symrise"
+  },
+  "TEG.DE": {
+    "entity_value": "83209",
+    "url_name": "TAG-IMMOBILIEN-AG",
+    "name": "TAG Immobilien"
+  },
+  "TKA.DE": {
+    "entity_value": "83008",
+    "url_name": "ThyssenKrupp",
+    "name": "thyssenkrupp"
+  },
+  "TKMS.DE": {
+    "entity_value": "308883514",
+    "url_name": "TKMS",
+    "name": "TKMS"
+  },
+  "TLX.DE": {
+    "entity_value": "55103458",
+    "url_name": "Talanx",
+    "name": "Talanx"
+  },
+  "TMV.DE": {
+    "entity_value": "162016606",
+    "url_name": "TeamViewer-SE",
+    "name": "TeamViewer"
+  },
+  "TUI1.DE": {
+    "entity_value": "12302743",
+    "url_name": "TUI",
+    "name": "TUI"
+  },
+  "UTDI.DE": {
+    "entity_value": "81232",
+    "url_name": "United-Internet",
+    "name": "United Internet"
+  },
+  "VNA.DE": {
+    "entity_value": "62903083",
+    "url_name": "Vonovia",
+    "name": "Vonovia"
+  },
+  "VOW3.DE": {
+    "entity_value": "83057",
+    "url_name": "Volkswagen-VZ",
+    "name": "Volkswagen"
+  },
+  "WAF.DE": {
+    "entity_value": "92425852",
+    "url_name": "Siltronic",
+    "name": "Siltronic"
+  },
+  "WCH.DE": {
+    "entity_value": "13903872",
+    "url_name": "Wacker-Chemie",
+    "name": "Wacker Chemie"
+  },
+  "ZAL.DE": {
+    "entity_value": "81388537",
+    "url_name": "Zalando",
+    "name": "Zalando"
+  }
+}

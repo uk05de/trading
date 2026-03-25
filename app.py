@@ -270,6 +270,14 @@ st.markdown("""
         padding-bottom: 0rem;
     }
 
+    /* Inline-Code in Info/Warning-Boxen lesbar machen */
+    [data-testid="stAlert"] code {
+        background: rgba(0, 0, 0, 0.3) !important;
+        color: #4ade80 !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+    }
+
     /* Metrics kompakter */
     [data-testid="stMetric"] { padding: 0.5rem 0 0.5rem 0; }
     [data-testid="stMetricValue"] { font-size: 1.6rem; }
@@ -984,48 +992,31 @@ def show_signal_dialog(ticker: str):
             if not _sig_sl or not _sig_tgt:
                 st.warning("Signal hat kein Stop-Loss oder Target.")
             else:
-                # Auto-Suche mit Default-Parametern (einmal fuer beide Tabs)
-                _auto_key = f"ko_auto_{ticker}_{_sig_sl}"
-                if _auto_key not in st.session_state:
-                    with st.spinner("Suche KO-Zertifikate..."):
-                        st.session_state[_auto_key] = search_ko(
-                            ticker, _sig_price, _sig_sl, _sig_dir)
-                _auto_results = st.session_state.get(_auto_key, [])
-                _auto_best = _auto_results[0] if _auto_results else None
-
-                # ── Shared: Trade-Formular Funktion ──
-                def _render_trade_form(selected, form_key):
-                    """Formular zum Trade eröffnen mit ausgewähltem Produkt."""
+                # ── Shared: Metriken + Formular ──
+                def _render_metrics_and_form(selected, form_key):
+                    """Metriken und Formular fuer ein ausgewaehltes Produkt."""
                     if not selected:
-                        st.warning("Kein Produkt ausgewählt.")
                         return
 
                     _ko_level = selected["ko_level"]
                     _bv = selected.get("bv", 1.0)
                     _bid = selected["bid"]
 
-                    # ISIN kopieren
-                    st.markdown(
-                        f"**{selected['wkn']}** · {selected['emittent']} · "
-                        f"Bid: {selected['bid']:.2f} € · "
-                        f"Basiswert: {selected.get('underlying', '')}")
-                    st.code(selected["isin"], language=None)
-
-                    # Sizing
+                    # Metriken
                     _cash_info = get_free_cash()
                     _size = 0
                     if _bid and _bid > 0 and _ko_level:
                         _ps = calc_position_size_risk(
                             _cash_info["balance"], _bid,
                             _sig_price, _sig_sl, _ko_level, _sig_dir, _bv)
-                        _m1, _m2, _m3, _m4, _m5, _m6 = st.columns(6)
-                        _m1.metric("Stück", f"{_ps['size']}")
-                        _m2.metric("Bid", f"{selected['bid']:.2f} €")
-                        _m3.metric("Invest", f"{_ps['invest_actual']:,.2f} €")
-                        _m4.metric("Risiko bei SL", f"{_ps['loss_at_sl']:,.2f} €")
-                        _m5.metric("Hebel", f"{selected['hebel']:.1f}x")
-                        _m6.metric("Knock-Out", f"{selected['ko_level']:.2f} €")
+                        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                        _m1.metric("WKN", selected["wkn"])
+                        _m2.metric("Bid", f"{_bid:.2f} EUR")
+                        _m3.metric("Hebel", f"{selected['hebel']:.1f}x")
+                        _m4.metric("Invest", _eur(_ps['invest_actual']))
+                        _m5.metric("Risiko bei SL", _eur(_ps['loss_at_sl']))
                         _size = _ps["size"]
+                    st.code(selected["isin"], language=None)
 
                     # Formular — Defaults setzen bevor das Form rendert
                     _kp_key = f"dlg_tf_kp_{form_key}"
@@ -1059,7 +1050,6 @@ def show_signal_dialog(ticker: str):
                         submitted = st.form_submit_button(
                             "Trade eröffnen", type="primary", use_container_width=True)
                         if submitted and trade_kaufpreis > 0:
-                            # Basiswert-Kurs aus tatsächlichem Kaufpreis rückrechnen
                             from ko_calc import product_to_stock
                             _actual_entry_stock = product_to_stock(
                                 trade_kaufpreis, _ko_level, _sig_dir, _bv)
@@ -1087,112 +1077,104 @@ def show_signal_dialog(ticker: str):
                                 st.error("Fehler beim Eröffnen.")
 
                 # ── Sub-Tabs: Automatisch / Manuell ──
-                _sub_auto, _sub_manual = st.tabs(["⚡ Automatisch", "🔧 Manuell"])
+                _sub_auto, _sub_manual = st.tabs(["Automatisch", "Manuell"])
 
                 # ── TAB: Automatisch ──────────────────────
                 with _sub_auto:
-                    if _auto_best:
-                        _render_trade_form(_auto_best, "auto")
-                    else:
-                        _ko_info = calc_ideal_ko(_sig_price, _sig_sl, _sig_dir)
-                        if "error" not in _ko_info:
-                            _typ = "Bull/Long" if _sig_dir == "LONG" else "Bear/Short"
-                            st.warning("Keine passenden KO-Zertifikate gefunden. "
-                                       "Suche manuell auf Trade Republic oder wechsel zu 'Manuell'.")
-                            st.markdown(
-                                f"**Suchparameter:**\n"
-                                f"- Typ: **Knock-Out {_typ}**\n"
-                                f"- KO-Schwelle: **{_ko_info['ko_range_min']:.2f} – {_ko_info['ko_range_max']:.2f} EUR** "
-                                f"(ideal: {_ko_info['ko_ideal']:.2f})\n"
-                                f"- Hebel: **~{_ko_info['leverage']:.0f}x**\n"
-                                f"- Entry: {_sig_price:.2f} EUR · SL: {_sig_sl:.2f} EUR · Target: {_sig_tgt:.2f} EUR"
-                            )
-                        else:
-                            st.warning("Keine passenden KO-Zertifikate gefunden. Wechsel zu 'Manuell'.")
+                    _slider_c, _btn_c = st.columns([3, 1])
+                    with _slider_c:
+                        _ko_buffer = st.slider(
+                            "Mindestabstand KO unter SL (%)", 1.0, 10.0, 3.0, 0.5,
+                            key="dlg_sig_ko_buffer",
+                            help="Je weiter weg, desto sicherer (weniger Hebel). 3% = Standard.",
+                        )
+                    with _btn_c:
+                        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                        _do_refresh = st.button("Neu suchen", key="dlg_sig_ko_refresh_auto",
+                                                use_container_width=True)
 
-                # ── TAB: Manuell ──────────────────────────
-                with _sub_manual:
-                    _ko_buffer = st.slider(
-                        "Mindestabstand KO unter SL (%)", 1.0, 10.0, 3.0, 0.5,
-                        key="dlg_sig_ko_buffer",
-                        help="Je größer, desto sicherer (weniger Hebel). 3% = Standard.",
-                    )
-
-                    _manual_key = f"ko_manual_{ticker}_{_sig_sl}_{_ko_buffer}"
-                    if _manual_key not in st.session_state or st.button(
-                            "Neu suchen", key="dlg_sig_ko_refresh", type="tertiary"):
-                        with st.spinner("Suche..."):
-                            st.session_state[_manual_key] = search_ko(
+                    _auto_key = f"ko_auto_{ticker}_{_sig_sl}_{_ko_buffer}"
+                    if _auto_key not in st.session_state or _do_refresh:
+                        with st.spinner("Suche KO-Zertifikate..."):
+                            st.session_state[_auto_key] = search_ko(
                                 ticker, _sig_price, _sig_sl, _sig_dir,
                                 ko_buffer_pct=_ko_buffer)
-                    _manual_results = st.session_state.get(_manual_key, [])
+                    _auto_results = st.session_state.get(_auto_key, [])
 
-                    _selected = None
-                    if _manual_results:
+                    if _auto_results:
                         _ko_rows = []
-                        for i, r in enumerate(_manual_results):
+                        for i, r in enumerate(_auto_results):
                             _ko_rows.append({
                                 "#": i + 1,
-                                "Basiswert": r.get("underlying", ""),
-                                "WKN": r["wkn"], "ISIN": r["isin"],
+                                "WKN": r["wkn"],
                                 "Emittent": r["emittent"],
-                                "KO": r["ko_level"],
+                                "KO": f"{r['ko_level']:.2f}",
                                 "Hebel": f"{r['hebel']:.1f}x",
-                                "Bid": r["bid"], "Ask": r["ask"],
+                                "Bid": f"{r['bid']:.2f}",
                                 "Spread": f"{r['spread_pct']:.1f}%",
                                 "KO-Abstand": f"{r['ko_abstand_sl_pct']:.1f}%",
                             })
                         st.dataframe(pd.DataFrame(_ko_rows), hide_index=True,
-                                     use_container_width=True)
+                                     width="stretch")
 
                         _sel_idx = st.selectbox(
-                            "Zertifikat wählen", range(len(_manual_results)),
+                            "Zertifikat", range(len(_auto_results)),
                             format_func=lambda i: (
-                                f"#{i+1} {_manual_results[i]['wkn']} "
-                                f"({_manual_results[i]['emittent']}, "
-                                f"Spread {_manual_results[i]['spread_pct']:.1f}%)"),
-                            key="dlg_sig_ko_select",
+                                f"#{i+1} {_auto_results[i]['wkn']} "
+                                f"({_auto_results[i]['emittent']}, "
+                                f"Hebel {_auto_results[i]['hebel']:.1f}x, "
+                                f"Spread {_auto_results[i]['spread_pct']:.1f}%)"),
+                            key="dlg_sig_ko_select_auto",
                         )
-                        _selected = _manual_results[_sel_idx]
+                        _auto_selected = _auto_results[_sel_idx]
+                        _render_metrics_and_form(_auto_selected, "auto")
                     else:
-                        st.warning("Keine Ergebnisse.")
+                        st.warning("Keine passenden KO-Zertifikate gefunden. "
+                                   "Suche manuell auf Trade Republic und trage die ISIN im Tab 'Manuell' ein.")
 
-                    # Fallback: ISIN Lookup
+                # ── TAB: Manuell (ISIN-Suche) ────────────
+                with _sub_manual:
+                    _ko_info = calc_ideal_ko(_sig_price, _sig_sl, _sig_dir)
+                    if "error" not in _ko_info:
+                        _typ = "Long" if _sig_dir == "LONG" else "Short"
+                        st.info(
+                            f"Typ: `{_typ}` · "
+                            f"KO-Schwelle: `{_ko_info['ko_range_min']:.2f} – {_ko_info['ko_range_max']:.2f} EUR` · "
+                            f"Idealer KO: `{_ko_info['ko_ideal']:.2f} EUR` · "
+                            f"Hebel: `~{_ko_info['leverage']:.0f}x`"
+                        )
+
                     _isin_state_key = f"ko_isin_{ticker}"
-                    with st.expander("Per ISIN suchen"):
-                        _ic1, _ic2 = st.columns([2, 1])
-                        with _ic1:
-                            _m_isin = st.text_input("ISIN", placeholder="DE000...",
-                                                    key="dlg_sig_m_isin")
-                        with _ic2:
-                            st.write("")
-                            _do_m = st.button("Laden", key="dlg_sig_m_btn")
-                        if _do_m and _m_isin and len(_m_isin) >= 12:
-                            with st.spinner("Lade..."):
-                                _mp = lookup_isin(_m_isin)
-                            if _mp:
-                                st.session_state[_isin_state_key] = {
-                                    "isin": _mp["isin"], "wkn": _mp.get("wkn", ""),
-                                    "emittent": _mp.get("emittent", ""),
-                                    "ko_level": _mp.get("ko_level", 0),
-                                    "bid": _mp.get("bid", 0), "ask": 0,
-                                    "hebel": _mp.get("leverage", 0),
-                                    "bv": _mp.get("bv", 1.0), "spread_pct": 0,
-                                    "ko_abstand_sl_pct": 0,
-                                    "underlying": _mp.get("underlying", ""),
-                                    "direction": _mp.get("direction", _sig_dir),
-                                }
-                                st.success(f"Geladen: {_mp.get('name')}")
-                            else:
-                                st.error("Nicht gefunden.")
 
-                    # ISIN-Ergebnis aus Session State laden (bleibt über Reruns erhalten)
-                    if _isin_state_key in st.session_state:
-                        _selected = st.session_state[_isin_state_key]
+                    _ic1, _ic2 = st.columns([3, 1])
+                    with _ic1:
+                        _m_isin = st.text_input("ISIN", placeholder="DE000...",
+                                                key="dlg_sig_m_isin")
+                    with _ic2:
+                        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                        _do_m = st.button("Suchen", key="dlg_sig_m_btn",
+                                          use_container_width=True)
+                    if _do_m and _m_isin and len(_m_isin) >= 12:
+                        with st.spinner("Lade..."):
+                            _mp = lookup_isin(_m_isin)
+                        if _mp:
+                            st.session_state[_isin_state_key] = {
+                                "isin": _mp["isin"], "wkn": _mp.get("wkn", ""),
+                                "emittent": _mp.get("emittent", ""),
+                                "ko_level": _mp.get("ko_level", 0),
+                                "bid": _mp.get("bid", 0), "ask": 0,
+                                "hebel": _mp.get("leverage", 0),
+                                "bv": _mp.get("bv", 1.0), "spread_pct": 0,
+                                "ko_abstand_sl_pct": 0,
+                                "underlying": _mp.get("underlying", ""),
+                                "direction": _mp.get("direction", _sig_dir),
+                            }
+                        else:
+                            st.error("Nicht gefunden.")
 
-                    if _selected:
-                        st.divider()
-                        _render_trade_form(_selected, "manual")
+                    _manual_selected = st.session_state.get(_isin_state_key)
+                    if _manual_selected:
+                        _render_metrics_and_form(_manual_selected, "manual")
 
 
 
@@ -1229,11 +1211,8 @@ def page_empfehlungen():
         st.session_state["run_scan"] = False
         st.session_state["scan_results"] = results_df
 
-    # If session has cached scan results (e.g. from rescan), use them
-    if results_df.empty and "scan_results" in st.session_state:
-        results_df = st.session_state["scan_results"]
-
-    # If still empty, load latest PATTERN signals from DB (heute + letzte Tage)
+    # Signale immer aus DB laden (nicht aus session_state cachen,
+    # damit alle Sessions den gleichen Stand sehen)
     if results_df.empty:
         # Letzte 5 Handelstage durchsuchen
         db_signals = []
@@ -1290,12 +1269,31 @@ def page_empfehlungen():
                                            / results_df["Entry"] * 100).round(1)
             results_df = results_df.sort_values("Score", ascending=False)
             st.session_state["scan_results"] = results_df
-            try:
-                _ts_dt = dt.datetime.fromisoformat(_latest_ts)
-                _ts_str = _ts_dt.strftime("%d.%m.%Y %H:%M Uhr")
-            except (ValueError, TypeError):
-                _ts_str = _signal_date_str or "unbekannt"
-            st.sidebar.caption(f"Stand: {_ts_str}")
+
+    # Datenstand immer in Sidebar (aus DB)
+    def _fmt_db_ts(ts_str):
+        if not ts_str:
+            return "–"
+        try:
+            _d = dt.datetime.fromisoformat(ts_str)
+            return _d.strftime("%d.%m.%Y %H:%M Uhr")
+        except (ValueError, TypeError):
+            return ts_str
+
+    from db import _connect as _db_connect
+    try:
+        _conn = _db_connect()
+        _sig_ts = _conn.execute(
+            "SELECT MAX(created_at) FROM signals").fetchone()[0]
+        _trade_ts = _conn.execute(
+            "SELECT MAX(created_at) FROM trades WHERE status = 'OPEN'").fetchone()[0]
+        _conn.close()
+        st.sidebar.caption("**Datenstand:**")
+        st.sidebar.caption(f"Signale: {_fmt_db_ts(_sig_ts)}")
+        if _trade_ts:
+            st.sidebar.caption(f"Trades: {_fmt_db_ts(_trade_ts)}")
+    except Exception:
+        pass
 
     # Load open trades from DB (always, independent of scan)
     _db_open_trades = get_trades(status="OPEN")
@@ -1333,20 +1331,24 @@ def page_empfehlungen():
         results_df["KI-Score"] = _ki_score
         st.session_state["scan_results"] = results_df
 
-    # --- Market context banner ---
-    if market:
+    # --- Market context banner (immer laden, 15 min Cache) ---
+    try:
+        from market_context import get_market_context
+        _mkt = get_market_context()
         _emoji = {"bull": "🟢", "bear": "🔴", "neutral": "⚪"}
-        _de = market.get("DE", {})
-        _us = market.get("US", {})
-        _de_trend = _de.get("trend", "neutral")
-        _us_trend = _us.get("trend", "neutral")
-        _vix = market.get("vix_level", "?")
+        _parts = []
+        for _idx_name in ("DAX", "TecDAX", "MDAX"):
+            _d = _mkt.get(_idx_name, {})
+            _t = _d.get("trend", "neutral")
+            _parts.append(f"{_idx_name} {_emoji.get(_t, '⚪')} {_t.upper()} ({_d.get('change_1m', 0):+.1f}% 1M)")
+        _vix = _mkt.get("vix_level", "?")
         st.info(
             f"**Marktumfeld:** "
-            f"DAX {_emoji.get(_de_trend, '⚪')} {_de_trend.upper()} ({_de.get('change_1m', 0):+.1f}%) · "
-            f"S&P 500 {_emoji.get(_us_trend, '⚪')} {_us_trend.upper()} ({_us.get('change_1m', 0):+.1f}%) · "
-            f"VIX: {_vix} ({market.get('vix_regime', '?')})"
+            + " · ".join(_parts)
+            + f" · VIX: {_vix} ({_mkt.get('vix_regime', '?')})"
         )
+    except Exception:
+        pass
 
     # --- Pattern-System Markt-Warning (DAX SMA200 / EMA20) ---
     try:
