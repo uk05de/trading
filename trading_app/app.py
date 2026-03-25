@@ -271,17 +271,17 @@ st.markdown("""
     }
 
     /* Metrics kompakter */
-    [data-testid="stMetric"] { padding: 6px 0; }
+    [data-testid="stMetric"] { padding: 0.5rem 0 0.5rem 0; }
     [data-testid="stMetricValue"] { font-size: 1.6rem; }
     [data-testid="stMetricLabel"] { font-size: 0.7rem; }
     [data-testid="stMetricDelta"] { font-size: 0.7rem; }
 
     /* Mobile: kompakter + Columns als Grid */
     @media (max-width: 768px) {
-        [data-testid="stMetricValue"] { font-size: 0.95rem; }
-        [data-testid="stMetricLabel"] { font-size: 0.6rem; }
-        [data-testid="stMetricDelta"] { font-size: 0.6rem; }
-        [data-testid="stMetric"] { padding: 2px 0; }
+        [data-testid="stMetric"] { padding: 0.5rem 0 0.5rem 0; }
+        [data-testid="stMetricValue"] { font-size: 1.4rem; }
+        [data-testid="stMetricLabel"] { font-size: 0.7rem; }
+        [data-testid="stMetricDelta"] { font-size: 0.7rem; }
 
         /* Nur Metric-Columns auf Mobile wrappen (nicht Formular-Felder) */
         [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
@@ -289,17 +289,17 @@ st.markdown("""
             gap: 0 !important;
         }
         [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > [data-testid="stColumn"] {
-            min-width: 30% !important;
-            flex: 0 0 30% !important;
+            min-width: 33% !important;
+            flex: 0 0 33% !important;
         }
 
         /* Tabs kompakter */
         .stTabs [data-baseweb="tab"] { font-size: 0.8rem; padding: 6px 8px; }
 
         /* Titel kleiner */
-        h1 { font-size: 1.3rem !important; }
-        h2 { font-size: 1.1rem !important; }
-        h3 { font-size: 1.0rem !important; }
+        h1 { font-size: 1.6rem !important; }
+        h2 { font-size: 1.4rem !important; }
+        h3 { font-size: 1.2rem !important; }
 
         /* Tabellen kompakter */
         .stDataFrame { font-size: 0.75rem; }
@@ -1568,7 +1568,7 @@ def page_empfehlungen():
 # PAGE: Meine Trades
 # =========================================================================
 def page_trades():
-    st.subheader("Meine Trades")
+    st.header("Meine Trades")
 
     # --- Cash-Übersicht ---
     _ci = get_free_cash()
@@ -1698,7 +1698,7 @@ def page_trades():
 
     # --- Open trades ---
     st.divider()
-    st.markdown("#### Offene Trades")
+    st.subheader("Offene Trades")
     open_trades = get_trades(status="OPEN")
 
     if open_trades:
@@ -1801,7 +1801,7 @@ def page_trades():
 
     # --- Trade Analytics Dashboard ---
     st.divider()
-    st.markdown("#### 📊 Trade-Analyse")
+    st.subheader("Trade-Analyse")
 
     from trade_analytics import get_trade_analytics
     _analytics = get_trade_analytics()
@@ -1907,7 +1907,7 @@ def page_trades():
 
     # --- Closed trades ---
     st.divider()
-    st.markdown("#### Geschlossene Trades")
+    st.subheader("Geschlossene Trades")
     closed_trades = get_trades(status="CLOSED")
 
     if closed_trades:
@@ -2022,19 +2022,18 @@ def page_trades():
 # PAGE: Konto (Buchungen)
 # =========================================================================
 def page_konto():
-    st.subheader("Konto & Buchungen")
+    st.header("Konto & Buchungen")
 
     # --- Übersicht ---
     _ki = get_free_cash()
-    _kc1, _kc2, _kc3, _kc4 = st.columns(4)
+    _kc1, _kc2, _kc3 = st.columns(3)
     _kc1.metric("Freies Cash", _eur(_ki['balance']))
     _kc2.metric("In Positionen", _eur(_ki['locked_cash']))
     _kc3.metric("Portfolio-Wert", _eur(_ki['portfolio_value']))
-    _kc4.metric("2% Risiko", _eur(_ki['balance'] * 0.02))
     st.divider()
 
     # --- Neue Buchung (alles eine Zeile) ---
-    st.markdown("#### Neue Buchung")
+    st.subheader("Neue Buchung")
     _buch_c1, _buch_c2, _buch_c3, _buch_c4, _buch_c5 = st.columns([1, 1, 2, 1, 1])
     with _buch_c1:
         _buch_type = st.selectbox(
@@ -2084,21 +2083,9 @@ def page_konto():
     if _buch_type == "Korrektur":
         st.caption("Korrekturen: Positiver Betrag erhöht das Guthaben, negativer senkt es.")
 
-    # --- Offene Positionen ---
-    if _ki["positions"]:
-        st.divider()
-        st.markdown("#### Offene Positionen (gebundenes Cash)")
-        _pos_df = pd.DataFrame(_ki["positions"])
-        _pos_df = _pos_df.rename(columns={
-            "ticker": "Ticker", "name": "Name", "invested": "Investiert (€)",
-            "size": "Stück", "direction": "Richtung",
-        })
-        _pos_df = _pos_df[["Ticker", "Name", "Richtung", "Stück", "Investiert (€)"]]
-        st.dataframe(_pos_df, hide_index=True, use_container_width=True)
-
     # --- Buchungshistorie ---
     st.divider()
-    st.markdown("#### Buchungshistorie")
+    st.subheader("Buchungshistorie")
 
     _entries = get_ledger_entries(limit=200)
     if _entries:
@@ -2137,9 +2124,10 @@ def page_konto():
             return styles
 
         _show_df = _hist_df[["Datum", "Typ", "Beschreibung", "Betrag", "Saldo"]].copy()
+        _show_df["Datum"] = _hist_df["Datum"].apply(_de_date)
         _show_df["_positive"] = _hist_df["Betrag"] > 0
-        _show_df["Betrag"] = _hist_df["Betrag"].apply(lambda x: f"{'+' if x > 0 else ''}{x:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-        _show_df["Saldo"] = _hist_df["Saldo"].apply(lambda x: f"{x:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
+        _show_df["Betrag"] = _hist_df["Betrag"].apply(lambda x: _eur(x, sign=True))
+        _show_df["Saldo"] = _hist_df["Saldo"].apply(_eur)
         _show_df["_id"] = _hist_df["id"]
         _show_df["_deletable"] = _hist_df["_deletable"]
 
@@ -2206,7 +2194,7 @@ def page_konto():
     # --- Saldo-Verlauf Chart ---
     if _entries and len(_entries) > 1:
         st.divider()
-        st.markdown("#### Saldo-Verlauf")
+        st.subheader("Saldo-Verlauf")
         # Chronologisch sortieren für Chart
         _chrono = sorted(_entries, key=lambda x: (x["date"], x["id"]))
         _saldo = 0.0
@@ -2225,7 +2213,7 @@ def page_konto():
 # PAGE: Signal-Historie
 # =========================================================================
 def page_historie():
-    st.subheader("Signal-Historie")
+    st.header("Signal-Historie")
 
     hist_col1, hist_col2 = st.columns(2)
     with hist_col1:
@@ -2245,7 +2233,7 @@ def page_historie():
             sig_df[available].rename(columns={
                 "date": "Datum", "ticker": "Ticker", "name": "Name",
                 "direction": "Richtung", "pattern": "Pattern", "score": "Score",
-                "entry": "Entry", "target": "Ziel", "stop_loss": "Stop-Loss",
+                "entry": "Entry", "target": "Ziel", "stop_loss": "S/L",
                 "risk_reward": "R/R",
             }),
             width="stretch", hide_index=True,
@@ -2351,10 +2339,3 @@ pg = st.navigation([
     st.Page(page_wiki, title="Wiki"),
 ])
 pg.run()
-
-# ---------------------------------------------------------------------------
-st.divider()
-st.caption(
-    "⚠️ Dies ist keine Finanzberatung. Nur zu Bildungszwecken. "
-    "Vergangene Performance ist kein Indikator für zukünftige Ergebnisse."
-)
