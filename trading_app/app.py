@@ -1198,19 +1198,19 @@ def page_empfehlungen():
         scan_result = run_scan()
         _scanner_mod.progress_callback = None
         _scan_bar.empty()
-        if isinstance(scan_result, tuple) and len(scan_result) == 4:
-            results_df, active_trades_df, market, _failed_tickers = scan_result
-        elif isinstance(scan_result, tuple) and len(scan_result) == 3:
-            results_df, active_trades_df, market = scan_result
-        # Gruppiere Trade-Rows nach Ticker
-        if not active_trades_df.empty:
-            _grouped = _group_trade_rows(active_trades_df.to_dict("records"))
-            active_trades_df = pd.DataFrame(_grouped)
+        # Scan speichert Signale in DB — results_df bleibt leer,
+        # damit der DB-Pfad unten Tage+Rang berechnet.
+        if isinstance(scan_result, tuple):
+            _sr = scan_result
+            if len(_sr) >= 4:
+                _failed_tickers = _sr[3]
+            if len(_sr) >= 2 and not _sr[1].empty:
+                _grouped = _group_trade_rows(_sr[1].to_dict("records"))
+                active_trades_df = pd.DataFrame(_grouped)
         if _failed_tickers:
             st.session_state["_failed_tickers"] = _failed_tickers
         else:
             st.session_state.pop("_failed_tickers", None)
-        st.session_state["scan_results"] = results_df
 
     # Signale immer aus DB laden (nicht aus session_state cachen,
     # damit alle Sessions den gleichen Stand sehen)
