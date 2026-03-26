@@ -11,7 +11,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT/trading_app"
 
-export TRADING_DB_PATH="${TRADING_DB_PATH:-$ROOT/trading.db}"
+# DB: data/trading.db im Projektroot (die eine, echte DB)
+export TRADING_DB_PATH="${TRADING_DB_PATH:-$ROOT/data/trading.db}"
 
 if [ "$1" = "bt" ]; then
     shift
