@@ -1001,17 +1001,18 @@ def show_signal_dialog(ticker: str):
                     _ko_level = selected["ko_level"]
                     _bv = selected.get("bv", 1.0)
                     _bid = selected["bid"]
+                    _ask = selected.get("ask") or _bid
 
                     # Metriken
                     _cash_info = get_free_cash()
                     _size = 0
-                    if _bid and _bid > 0 and _ko_level:
+                    if _ask and _ask > 0 and _ko_level:
                         _ps = calc_position_size_risk(
-                            _cash_info["balance"], _bid,
+                            _cash_info["balance"], _ask,
                             _sig_price, _sig_sl, _ko_level, _sig_dir, _bv)
                         _m1, _m2, _m3, _m4, _m5 = st.columns(5)
                         _m1.metric("WKN", selected["wkn"])
-                        _m2.metric("Bid", f"{_bid:.2f} EUR")
+                        _m2.metric("Ask (Kauf)", f"{_ask:.2f} EUR")
                         _m3.metric("Hebel", f"{selected['hebel']:.1f}x")
                         _m4.metric("Invest", _eur(_ps['invest_actual']))
                         _m5.metric("Risiko bei SL", _eur(_ps['loss_at_sl']))
@@ -1022,7 +1023,7 @@ def show_signal_dialog(ticker: str):
                     _kp_key = f"dlg_tf_kp_{form_key}"
                     _sz_key = f"dlg_tf_sz_{form_key}"
                     if _kp_key not in st.session_state:
-                        st.session_state[_kp_key] = float(_bid) if _bid else 0.0
+                        st.session_state[_kp_key] = float(_ask) if _ask else 0.0
                     if _sz_key not in st.session_state:
                         st.session_state[_sz_key] = float(_size) if _size > 0 else 1.0
 
