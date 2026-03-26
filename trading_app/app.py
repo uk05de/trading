@@ -1515,8 +1515,9 @@ def page_empfehlungen():
                 },
             )
 
-            # Signal dialog trigger
-            if selection and selection.selection and selection.selection.rows:
+            # Signal dialog trigger (nicht wenn Ticker-Check aktiv)
+            if (selection and selection.selection and selection.selection.rows
+                    and not st.session_state.get("_chk_active")):
                 clicked_idx = selection.selection.rows[0]
                 clicked_ticker = filtered.iloc[clicked_idx]["Ticker"]
                 _prev = st.session_state.get("_prev_sig_sel")
@@ -1595,6 +1596,12 @@ def page_empfehlungen():
         with _chk_c2:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             _chk_go = st.button("Prüfen", key="chk_go", use_container_width=True)
+
+        if _chk_go:
+            st.session_state["_chk_active"] = True
+            st.session_state.pop("_prev_sig_sel", None)
+        else:
+            st.session_state.pop("_chk_active", None)
 
         if _chk_go and _chk_ticker:
             with st.spinner(f"Lade {_chk_ticker}..."):
