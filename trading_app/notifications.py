@@ -57,19 +57,30 @@ def _send_ha_notification(title: str, message: str, critical: bool = False):
 
     try:
         import requests
+        _headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        # Push-Notification ans Handy
         resp = requests.post(
             f"http://supervisor/core/api/services/{domain}/{svc}",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=data,
-            timeout=5,
+            headers=_headers, json=data, timeout=5,
         )
         if resp.status_code in (200, 201):
             log.info("Notification gesendet: %s", title)
         else:
             log.warning("Notification Fehler %d: %s", resp.status_code, resp.text[:200])
+
+        # Persistente Notification in HA (vollständig lesbar)
+        requests.post(
+            "http://supervisor/core/api/services/persistent_notification/create",
+            headers=_headers, timeout=5,
+            json={
+                "title": title,
+                "message": message,
+                "notification_id": f"trading_{title[:30].replace(' ', '_').lower()}",
+            },
+        )
     except Exception as e:
         log.warning("Notification fehlgeschlagen: %s", e)
 
