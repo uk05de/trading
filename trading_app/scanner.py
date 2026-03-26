@@ -513,7 +513,7 @@ def refresh_open_trades() -> int:
 
     if n_updated > 0:
         from db import set_setting
-        set_setting("last_trade_refresh", dt.datetime.now().isoformat())
+        set_setting("last_trade_refresh", dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
     return n_updated
 
