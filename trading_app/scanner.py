@@ -317,6 +317,27 @@ def run_scan() -> tuple[pd.DataFrame, dict]:
     except Exception as e:
         log.warning("Post-Exit Tracking fehlgeschlagen: %s", e)
 
+    # Heutige Signale bereinigen: Signale die im Scan nicht mehr gefunden
+    # wurden aus der DB loeschen (z.B. Kurs ist vom EMA50 weggelaufen)
+    try:
+        from db import _connect
+        _found_today = {(r["Ticker"], r["Pattern"]) for r in results} if results else set()
+        _conn = _connect()
+        _db_today = _conn.execute(
+            "SELECT ticker, pattern FROM signals WHERE date = ? AND pattern IS NOT NULL",
+            (today,)).fetchall()
+        _stale = [(r["ticker"], r["pattern"]) for r in _db_today
+                  if (r["ticker"], r["pattern"]) not in _found_today]
+        for _t, _p in _stale:
+            _conn.execute("DELETE FROM signals WHERE date = ? AND ticker = ? AND pattern = ?",
+                          (today, _t, _p))
+            log.info("Signal bereinigt: %s %s (nicht mehr erkannt)", _t, _p)
+        if _stale:
+            _conn.commit()
+        _conn.close()
+    except Exception as e:
+        log.warning("Signal-Bereinigung fehlgeschlagen: %s", e)
+
     log.info("Scan fertig: %d Signale, %d Trade-Updates, %d fehlgeschlagen",
              len(results), len(trade_updates), len(failed_tickers))
     return results_df, trades_df, market, failed_tickers
