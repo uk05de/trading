@@ -138,6 +138,22 @@ def simulate(signals: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
                                               ascending=[True, False]).drop(
                     columns=["_adx", "_score"]).reset_index(drop=True)
 
+        elif cfg.signal_ranking == "persistence_score":
+            # combo_score + Persistenz-Gewichtung
+            if "detail" in signals.columns and "persistence" in signals.columns:
+                def _parse_adx3(detail):
+                    m = re.search(r'ADX=(\d+)', str(detail))
+                    return int(m.group(1)) if m else 25
+                signals["_adx"] = signals["detail"].apply(_parse_adx3)
+                adx_max = signals["_adx"].max() or 1
+                sl_max = signals["sl_dist_pct"].max() or 1
+                base = (signals["_adx"] / adx_max * 0.5 +
+                        (1 - signals["sl_dist_pct"] / sl_max) * 0.5)
+                signals["_score"] = base + signals["persistence"] * cfg.persistence_weight
+                signals = signals.sort_values(["date", "_score"],
+                                              ascending=[True, False]).drop(
+                    columns=["_adx", "_score"]).reset_index(drop=True)
+
         elif cfg.signal_ranking == "random":
             signals = signals.sample(frac=1, random_state=42).sort_values("date").reset_index(drop=True)
     free_cash = cfg.start_capital

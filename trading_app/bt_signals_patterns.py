@@ -119,9 +119,83 @@ def _evaluate_trade_trailing(df: pd.DataFrame, signal_idx: int,
             "final_sl": current_sl, "final_target": current_target}
 
 
+def _evaluate_trade_breakeven(df: pd.DataFrame, signal_idx: int,
+                              direction: str, entry: float, target: float,
+                              stop_loss: float, trigger_pct: float) -> dict:
+    """
+    Trade-Auswertung mit Breakeven-Stop nach Recovery.
+
+    Logik (LONG):
+      1. Kurs faellt unter Entry - trigger_pct% (Trade war im Minus)
+      2. Kurs erholt sich zurueck ueber Entry
+      3. Ab jetzt: SL = Entry (Breakeven)
+
+    Der Trade muss erst Schwaeche zeigen und sich erholen,
+    bevor der Breakeven-Stop aktiviert wird.
+    """
+    future = df.iloc[signal_idx + 1: signal_idx + 1 + MAX_HOLD_DAYS]
+    was_negative = False      # War der Trade schon im Minus?
+    breakeven_active = False  # Wurde Breakeven aktiviert?
+
+    for day_n, (date, row) in enumerate(future.iterrows(), 1):
+        close = float(row["Close"])
+        low = float(row["Low"])
+        high = float(row["High"])
+
+        current_sl = entry if breakeven_active else stop_loss
+
+        if direction == "LONG":
+            # SL-Check
+            if low <= current_sl:
+                pnl = (current_sl - entry) / entry * 100
+                return {"outcome": "BREAKEVEN" if breakeven_active else "STOP",
+                        "pnl_pct": round(pnl, 2), "days_held": day_n,
+                        "exit_price": current_sl, "exit_date": date}
+            # Target-Check
+            if high >= target:
+                pnl = (target - entry) / entry * 100
+                return {"outcome": "TARGET", "pnl_pct": round(pnl, 2),
+                        "days_held": day_n, "exit_price": target, "exit_date": date}
+            # Phase 1: War der Kurs schon trigger_pct% unter Entry?
+            if not was_negative and low <= entry * (1 - trigger_pct / 100):
+                was_negative = True
+            # Phase 2: Kurs zurueck ueber Entry → Breakeven aktivieren
+            if was_negative and not breakeven_active and close >= entry:
+                breakeven_active = True
+        else:  # SHORT
+            if high >= current_sl:
+                pnl = (entry - current_sl) / entry * 100
+                return {"outcome": "BREAKEVEN" if breakeven_active else "STOP",
+                        "pnl_pct": round(pnl, 2), "days_held": day_n,
+                        "exit_price": current_sl, "exit_date": date}
+            if low <= target:
+                pnl = (entry - target) / entry * 100
+                return {"outcome": "TARGET", "pnl_pct": round(pnl, 2),
+                        "days_held": day_n, "exit_price": target, "exit_date": date}
+            if not was_negative and high >= entry * (1 + trigger_pct / 100):
+                was_negative = True
+            if was_negative and not breakeven_active and close <= entry:
+                breakeven_active = True
+
+    # Timeout
+    if len(future) > 0:
+        exit_px = float(future.iloc[-1]["Close"])
+        if direction == "LONG":
+            pnl = (exit_px - entry) / entry * 100
+        else:
+            pnl = (entry - exit_px) / entry * 100
+        return {"outcome": "TIMEOUT", "pnl_pct": round(pnl, 2),
+                "days_held": len(future), "exit_price": exit_px,
+                "exit_date": future.index[-1]}
+
+    return {"outcome": "NO_DATA", "pnl_pct": 0.0, "days_held": 0,
+            "exit_price": entry, "exit_date": None}
+
+
 def collect_pattern_signals(cfg: BacktestConfig,
                             target_rr: float | None = None,
                             trailing: bool = False,
+                            breakeven_pct: float = 0.0,
                             force_rescan: bool = False,
                             verbose: bool = True) -> pd.DataFrame:
     """
@@ -140,12 +214,13 @@ def collect_pattern_signals(cfg: BacktestConfig,
 
     Returns: DataFrame im gleichen Format wie bt_signals.collect_signals()
     """
-    # Cache-Pfad: unterschiedlich je nach target_rr und trailing
+    # Cache-Pfad: unterschiedlich je nach target_rr, trailing, breakeven
     trail_suffix = "_trail" if trailing else ""
+    be_suffix = f"_be{breakeven_pct:.0f}" if breakeven_pct > 0 else ""
     if target_rr is not None:
-        cache = f"data/signals_patterns_rr{target_rr:.1f}{trail_suffix}.pkl"
+        cache = f"data/signals_patterns_rr{target_rr:.1f}{trail_suffix}{be_suffix}.pkl"
     else:
-        cache = CACHE_PATH.replace(".pkl", f"{trail_suffix}.pkl") if trailing else CACHE_PATH
+        cache = CACHE_PATH.replace(".pkl", f"{trail_suffix}{be_suffix}.pkl") if (trailing or be_suffix) else CACHE_PATH
 
     if not force_rescan and os.path.exists(cache):
         if verbose:
@@ -170,6 +245,11 @@ def collect_pattern_signals(cfg: BacktestConfig,
 
         df = compute_all(df_raw.copy())
         hits = scan_all_patterns(df, warmup=cfg.warmup_bars)
+
+        # Persistenz-Map: (pattern, date) -> True fuer alle Hits VOR Blocking
+        _hit_dates: dict[str, set] = {}  # pattern -> {date1, date2, ...}
+        for h in hits:
+            _hit_dates.setdefault(h["pattern"], set()).add(pd.Timestamp(h["date"]))
 
         # Blocking: pro Ticker nur ein Trade gleichzeitig
         in_trade_until = -1
@@ -215,7 +295,10 @@ def collect_pattern_signals(cfg: BacktestConfig,
                 rr = round(reward / risk, 2) if risk > 0 else 0.0
 
             # Trade auswerten
-            if trailing and direction == "LONG":
+            if breakeven_pct > 0:
+                outcome = _evaluate_trade_breakeven(
+                    df, idx_pos, direction, entry, target, sl, breakeven_pct)
+            elif trailing and direction == "LONG":
                 outcome = _evaluate_trade_trailing(
                     df, idx_pos, entry, target, sl,
                 )
@@ -232,6 +315,11 @@ def collect_pattern_signals(cfg: BacktestConfig,
             # Exit-Datum
             exit_idx = min(idx_pos + outcome["days_held"], len(df) - 1)
             exit_date = df.index[exit_idx]
+
+            # Persistenz: wie viele Tage dieses Pattern in den letzten N Tagen?
+            _pat_dates = _hit_dates.get(hit["pattern"], set())
+            _lb_start = sig_date - pd.Timedelta(days=cfg.persistence_lookback)
+            _persistence = sum(1 for d in _pat_dates if _lb_start <= d <= sig_date)
 
             signal = {
                 "date": sig_date,
@@ -252,6 +340,7 @@ def collect_pattern_signals(cfg: BacktestConfig,
                 "pattern": hit["pattern"],
                 "detail": hit["detail"],
                 "index": get_index(ticker),
+                "persistence": _persistence,
             }
 
             all_signals.append(signal)

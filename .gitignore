@@ -4,9 +4,13 @@ __pycache__/
 .venv/
 
 # Data (DB ist zu gross fuer Git, wird lokal erzeugt)
+trading.db
 data/trading.db
 data/trading_backup_*.db
 data/*.pkl
+data/*.log
+data/.scan_today
+data/todo.md
 trading_app/data/trading.db
 trading_app/data/*.pkl
 

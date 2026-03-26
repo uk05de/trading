@@ -78,8 +78,14 @@ class BacktestConfig:
     # "sl_dist_asc" = engster SL zuerst (praezisestes Setup)
     # "sl_dist_desc" = weitester SL zuerst (mehr Luft)
     # "vol_ratio" = hoechstes Volumen zuerst
+    # "combo_score" = ADX * 0.5 + (1/SL_dist) * 0.01
+    # "persistence_score" = combo_score + (persistence * persistence_weight)
     # "random" = zufaellig (Baseline)
     signal_ranking: str = "none"
+
+    # ── Persistenz-Ranking ──
+    persistence_weight: float = 0.0    # Gewicht der Signal-Persistenz (0 = aus)
+    persistence_lookback: int = 10     # Lookback-Fenster in Boersentagen
 
     # ── Benutzerdefinierter Veto-Filter (optional) ──
     # Callable: (signal_dict) -> bool  (True = vetoed, wird übersprungen)

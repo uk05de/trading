@@ -30,7 +30,10 @@ from bt_config import (
     preset_production, preset_risk_portfolio,
     preset_conservative, preset_aggressive,
 )
-from bt_signals import collect_signals
+try:
+    from bt_signals import collect_signals
+except ImportError:
+    collect_signals = None  # bt_signals.py im Archive, nur fuer alte Funktionen
 from bt_simulate import simulate, BacktestResult
 from bt_report import generate_report, generate_compare_report, _make_run_dir
 
@@ -682,6 +685,216 @@ def grid_patterns(verbose: bool = True, report: bool = True) -> list[BacktestRes
     return all_results
 
 
+# ─── Breakeven-Stop Test ─────────────────────────────────────────────────
+
+def test_breakeven(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
+    """
+    Test: SL auf Entry ziehen sobald Kurs X% ueber Entry lag.
+
+    Vergleicht verschiedene Trigger-Schwellen (2%, 3%, 5%, R-basiert)
+    gegen die Baseline ohne Breakeven-Stop.
+    """
+    from bt_signals_patterns import collect_pattern_signals
+
+    WINNER_PATTERNS = ["ema50_bounce", "gap_up_continuation"]
+    force = "--rescan" in sys.argv
+
+    pat_base = preset_baseline_v1()
+    sizing_base = replace(pat_base,
+                          min_invest=25.0,
+                          sizing_method="risk_free", sizing_pct=0.02,
+                          max_invest=2500.0,
+                          pattern_filter=WINNER_PATTERNS,
+                          max_positions=5,
+                          min_sl_dist=0.05,
+                          signal_ranking="persistence_score",
+                          persistence_weight=0.2,
+                          persistence_lookback=10)
+
+    all_results: list[BacktestResult] = []
+    ranking: list[dict] = []
+
+    # Baseline ohne Breakeven
+    if verbose:
+        print(f"\n  Lade Baseline-Signale (kein Breakeven)...")
+    baseline_signals = collect_pattern_signals(
+        replace(pat_base, persistence_lookback=10),
+        target_rr=2.0, force_rescan=force, verbose=verbose)
+
+    if baseline_signals.empty:
+        print("  Keine Signale!")
+        return []
+
+    r_base = simulate(baseline_signals, replace(sizing_base, name="Kein Breakeven (Baseline)"))
+    all_results.append(r_base)
+    ranking.append({"name": r_base.config.name, "trigger": "-",
+                    "trades": r_base.n_trades, "win_rate": r_base.win_rate,
+                    "total_return": r_base.total_return, "max_dd": r_base.max_drawdown,
+                    "efficiency": r_base.efficiency, "end_capital": r_base.end_capital})
+
+    # Breakeven-Varianten
+    for trigger in [2, 3, 5, 7, 10]:
+        if verbose:
+            print(f"\n  Lade Signale (Breakeven bei +{trigger}%)...")
+        signals = collect_pattern_signals(
+            replace(pat_base, persistence_lookback=10),
+            target_rr=2.0, breakeven_pct=trigger,
+            force_rescan=force, verbose=verbose)
+
+        if signals.empty:
+            continue
+
+        name = f"Breakeven bei +{trigger}%"
+        r = simulate(signals, replace(sizing_base, name=name))
+        all_results.append(r)
+        ranking.append({"name": name, "trigger": f"+{trigger}%",
+                        "trades": r.n_trades, "win_rate": r.win_rate,
+                        "total_return": r.total_return, "max_dd": r.max_drawdown,
+                        "efficiency": r.efficiency, "end_capital": r.end_capital})
+
+    # Ranking
+    if verbose and ranking:
+        ranking_df = pd.DataFrame(ranking).sort_values("efficiency", ascending=False)
+        print(f"\n  {'=' * 100}")
+        print(f"  BREAKEVEN-RANKING (nach Effizienz)")
+        print(f"  {'=' * 100}")
+        print(f"  {'#':>3s} {'Konfiguration':>35s} | {'Tr':>4s} {'WR':>6s} | "
+              f"{'Ret':>8s} {'DD':>6s} {'Eff':>5s} | {'Endkap.':>10s}")
+        print(f"  {'─' * 85}")
+
+        for i, (_, row) in enumerate(ranking_df.iterrows()):
+            print(f"  {i+1:>3d} {row['name']:>35s} | {row['trades']:>4.0f} {row['win_rate']:>5.1f}% | "
+                  f"{row['total_return']:>+7.1f}% {row['max_dd']:>5.1f}% {row['efficiency']:>5.1f} | "
+                  f"€{row['end_capital']:>9,.2f}")
+
+    # Report
+    if report and all_results:
+        run_dir = _make_run_dir(BacktestConfig(name="breakeven_test"))
+        generate_compare_report(all_results, run_dir=run_dir)
+        for r in all_results:
+            generate_report(r, run_dir=run_dir, all_results=all_results)
+        if verbose:
+            print(f"\n  Reports: {run_dir}/")
+        import subprocess
+        subprocess.run(["open", str(run_dir / "report.html")])
+
+    return all_results
+
+
+# ─── Persistenz-Test ─────────────────────────────────────────────────────
+
+def test_persistence(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
+    """
+    Test: Verbessert Signal-Persistenz (Tage × Weight) das Trade-Ranking?
+
+    Vergleicht combo_score (Baseline) gegen persistence_score mit
+    verschiedenen Gewichten und Lookback-Fenstern.
+    """
+    from bt_signals_patterns import collect_pattern_signals
+
+    WINNER_PATTERNS = ["ema50_bounce", "gap_up_continuation"]
+    force = "--rescan" in sys.argv
+
+    all_results: list[BacktestResult] = []
+    ranking: list[dict] = []
+
+    pat_base = preset_baseline_v1()
+
+    for lookback in [5, 10, 15]:
+        if verbose:
+            print(f"\n  ── Lookback = {lookback} Tage ──────────────────")
+
+        # Signale mit Persistenz sammeln (Cache pro Lookback)
+        cfg_lb = replace(pat_base, persistence_lookback=lookback)
+        cache = f"data/signals_patterns_rr2.0_lb{lookback}.pkl"
+        if not force and os.path.exists(cache):
+            pat_signals = pd.read_pickle(cache)
+            if verbose:
+                print(f"  Cache: {cache} ({len(pat_signals)} Signale)")
+        else:
+            if verbose:
+                print(f"  Sammle Signale (Lookback={lookback})...")
+            pat_signals = collect_pattern_signals(
+                cfg_lb, target_rr=2.0, force_rescan=True, verbose=verbose)
+            if not pat_signals.empty:
+                pat_signals.to_pickle(cache)
+
+        if pat_signals.empty:
+            continue
+
+        # Persistenz-Verteilung ausgeben
+        if verbose and "persistence" in pat_signals.columns:
+            p_dist = pat_signals["persistence"].value_counts().sort_index()
+            print(f"  Persistenz-Verteilung: {dict(p_dist)}")
+
+        sizing_base = replace(pat_base,
+                              min_invest=25.0,
+                              sizing_method="risk_free", sizing_pct=0.02,
+                              max_invest=2500.0,
+                              pattern_filter=WINNER_PATTERNS,
+                              max_positions=5,
+                              min_sl_dist=0.05)
+
+        configs = [
+            # Baseline: combo_score ohne Persistenz
+            replace(sizing_base,
+                    name=f"LB{lookback} combo_score (Baseline)",
+                    signal_ranking="combo_score"),
+        ]
+
+        # Persistenz mit verschiedenen Gewichten
+        for w in [0.05, 0.1, 0.2, 0.3, 0.5]:
+            configs.append(replace(sizing_base,
+                                   name=f"LB{lookback} persist w={w}",
+                                   signal_ranking="persistence_score",
+                                   persistence_weight=w,
+                                   persistence_lookback=lookback))
+
+        results = compare(configs, signals=pat_signals,
+                          verbose=verbose, report=False)
+        all_results.extend(results)
+
+        for r in results:
+            ranking.append({
+                "name": r.config.name,
+                "lookback": lookback,
+                "trades": r.n_trades,
+                "win_rate": r.win_rate,
+                "total_return": r.total_return,
+                "max_dd": r.max_drawdown,
+                "efficiency": r.efficiency,
+                "end_capital": r.end_capital,
+            })
+
+    # Ranking ausgeben
+    if verbose and ranking:
+        ranking_df = pd.DataFrame(ranking).sort_values("efficiency", ascending=False)
+        print(f"\n  {'=' * 100}")
+        print(f"  PERSISTENZ-RANKING (nach Effizienz)")
+        print(f"  {'=' * 100}")
+        print(f"  {'#':>3s} {'Konfiguration':>40s} | {'LB':>3s} {'Tr':>4s} {'WR':>6s} | "
+              f"{'Ret':>8s} {'DD':>6s} {'Eff':>5s} | {'Endkap.':>10s}")
+        print(f"  {'─' * 95}")
+
+        for i, (_, row) in enumerate(ranking_df.iterrows()):
+            print(f"  {i+1:>3d} {row['name']:>40s} | {row['lookback']:>3.0f} {row['trades']:>4.0f} {row['win_rate']:>5.1f}% | "
+                  f"{row['total_return']:>+7.1f}% {row['max_dd']:>5.1f}% {row['efficiency']:>5.1f} | "
+                  f"€{row['end_capital']:>9,.2f}")
+
+    # Report
+    if report and all_results:
+        run_dir = _make_run_dir(BacktestConfig(name="persistence_test"))
+        generate_compare_report(all_results, run_dir=run_dir)
+        for r in all_results:
+            generate_report(r, run_dir=run_dir, all_results=all_results)
+        if verbose:
+            print(f"\n  Reports: {run_dir}/")
+        import subprocess
+        subprocess.run(["open", str(run_dir / "report.html")])
+
+    return all_results
+
+
 # ─── CLI ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -719,6 +932,12 @@ def main():
 
     elif "--pattern-grid" in args:
         grid_patterns()
+
+    elif "--breakeven" in args:
+        test_breakeven()
+
+    elif "--persistence" in args:
+        test_persistence()
 
     elif "--patterns" in args:
         evolve_patterns()
