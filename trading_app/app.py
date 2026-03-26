@@ -1490,60 +1490,32 @@ def page_empfehlungen():
                 height=min(45 * len(display) + 50, 800),
                 on_select="rerun",
                 selection_mode="single-row",
+                key="signals_table",
                 column_config={
-                    "Ticker": st.column_config.TextColumn(
-                        "Ticker",
-                        help="Yahoo Finance Ticker-Symbol"),
-                    "Name": st.column_config.TextColumn(
-                        "Name",
-                        help="Name des Unternehmens"),
-                    "Index": st.column_config.TextColumn(
-                        "Index",
-                        help="Zugehöriger Leitindex"),
-                    "Pattern": st.column_config.TextColumn(
-                        "Pattern",
-                        help="Erkanntes Chart-Pattern"),
-                    "Richtung": st.column_config.TextColumn(
-                        "Richtung",
-                        help="LONG = Kauf-Signal, SHORT = Verkauf-Signal"),
-                    "Entry": st.column_config.NumberColumn(
-                        "Entry",
-                        format="%.2f",
-                        help="Einstiegskurs (Basiswert)"),
-                    "R/R": st.column_config.ProgressColumn(
-                        "R/R",
-                        format="%.1f",
-                        min_value=0,
-                        max_value=3.0,
-                        help="Risk/Reward. Backtest-Optimum: >= 1.0"),
-                    "SL-Dist%": st.column_config.NumberColumn(
-                        "SL-Dist%",
-                        format="%.1f%%",
-                        help="Abstand Stop-Loss zum Entry in %"),
-                    "Score": st.column_config.NumberColumn(
-                        "Score",
-                        format="%+.1f",
-                        help="Signal-Score aus dem Scanner"),
-                    "Konsens": st.column_config.TextColumn(
-                        "Konsens",
-                        help="★★★ = Tech + KI gleiche Richtung, ⚠ = Widerspruch, – = keine KI-Bewertung"),
-                    "KI-Score": st.column_config.NumberColumn(
-                        "KI",
-                        format="%+.0f",
-                        help="KI-Bewertungsscore (-100 bis +100)"),
+                    "Name": st.column_config.TextColumn("Name"),
+                    "Index": st.column_config.TextColumn("Index"),
+                    "Pattern": st.column_config.TextColumn("Pattern"),
+                    "Richtung": st.column_config.TextColumn("Richtung"),
+                    "Entry": st.column_config.NumberColumn("Entry", format="%.2f"),
+                    "SL-Dist%": st.column_config.NumberColumn("SL-Dist%", format="%.1f%%"),
+                    "Rang": st.column_config.NumberColumn("Rang", format="%.2f"),
+                    "Tage": st.column_config.NumberColumn("Tage", format="%d"),
+                    "ADX": st.column_config.NumberColumn("ADX", format="%.0f"),
+                    "RSI": st.column_config.NumberColumn("RSI", format="%.0f"),
                 },
             )
 
-            # Signal dialog trigger from recommendations table
+            # Signal dialog trigger
             if selection and selection.selection and selection.selection.rows:
                 clicked_idx = selection.selection.rows[0]
                 clicked_ticker = filtered.iloc[clicked_idx]["Ticker"]
-                st.session_state["_open_signal_dialog"] = clicked_ticker
-
-            # Dialog öffnen (separater Block — überlebt Reruns)
-            if "_open_signal_dialog" in st.session_state:
-                _dlg_ticker = st.session_state.pop("_open_signal_dialog")
-                show_signal_dialog(_dlg_ticker)
+                _prev = st.session_state.get("_prev_sig_sel")
+                if _prev != clicked_ticker:
+                    st.session_state["_prev_sig_sel"] = clicked_ticker
+                    show_signal_dialog(clicked_ticker)
+                else:
+                    st.session_state["_prev_sig_sel"] = None
+                    st.rerun()
 
     # --- Fehlgeschlagene Ticker: Retry-Tabelle ---
     _stored_failed = st.session_state.get("_failed_tickers", [])
