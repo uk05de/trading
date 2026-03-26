@@ -1288,6 +1288,11 @@ def page_empfehlungen():
             return "–"
         try:
             _d = dt.datetime.fromisoformat(ts_str)
+            # DB speichert UTC (SQLite datetime('now')) → nach Lokalzeit
+            if _d.tzinfo is None:
+                import zoneinfo
+                _d = _d.replace(tzinfo=dt.timezone.utc).astimezone(
+                    zoneinfo.ZoneInfo("Europe/Berlin"))
             return _d.strftime("%d.%m.%Y %H:%M Uhr")
         except (ValueError, TypeError):
             return ts_str
