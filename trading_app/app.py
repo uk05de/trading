@@ -1190,6 +1190,8 @@ def page_empfehlungen():
     _failed_tickers = []
 
     if st.session_state.get("run_scan"):
+        # Flag SOFORT zurücksetzen damit ein Rerun keinen neuen Scan startet
+        st.session_state["run_scan"] = False
         import scanner as _scanner_mod
         _scan_bar = st.progress(0, text="Scan: Download ...")
         _scanner_mod.progress_callback = lambda d, t, txt: _scan_bar.progress(d / t, text=f"Scan: {txt}")
@@ -1208,7 +1210,6 @@ def page_empfehlungen():
             st.session_state["_failed_tickers"] = _failed_tickers
         else:
             st.session_state.pop("_failed_tickers", None)
-        st.session_state["run_scan"] = False
         st.session_state["scan_results"] = results_df
 
     # Signale immer aus DB laden (nicht aus session_state cachen,
@@ -1467,9 +1468,9 @@ def page_empfehlungen():
             _mask = _mask & _df["Sparte"].isin(sector_filter)
         filtered = _df[_mask].copy()
 
-        # Nach Rang sortieren (beste zuerst)
+        # Nach Rang sortieren (beste zuerst) + Index reset für Klick-Handler
         if not filtered.empty and "Rang" in filtered.columns:
-            filtered = filtered.sort_values("Rang", ascending=False)
+            filtered = filtered.sort_values("Rang", ascending=False).reset_index(drop=True)
 
         # --- Recommendations table ---
         if filtered.empty:
