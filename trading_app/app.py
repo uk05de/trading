@@ -1538,14 +1538,12 @@ def page_empfehlungen():
             if selection and selection.selection and selection.selection.rows:
                 clicked_idx = selection.selection.rows[0]
                 clicked_ticker = filtered.iloc[clicked_idx]["Ticker"]
-                clicked_name = filtered.iloc[clicked_idx]["Name"]
-                _prev = st.session_state.get("_prev_sig_sel")
-                if _prev != clicked_ticker:
-                    st.session_state["_prev_sig_sel"] = clicked_ticker
-                    show_signal_dialog(clicked_ticker)
-                else:
-                    st.session_state["_prev_sig_sel"] = None
-                    st.rerun()
+                st.session_state["_open_signal_dialog"] = clicked_ticker
+
+            # Dialog öffnen (separater Block — überlebt Reruns)
+            if "_open_signal_dialog" in st.session_state:
+                _dlg_ticker = st.session_state.pop("_open_signal_dialog")
+                show_signal_dialog(_dlg_ticker)
 
     # --- Fehlgeschlagene Ticker: Retry-Tabelle ---
     _stored_failed = st.session_state.get("_failed_tickers", [])
