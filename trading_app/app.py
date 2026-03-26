@@ -1272,10 +1272,14 @@ def page_empfehlungen():
                                            / results_df["Entry"] * 100).round(1)
             if "Datum" in results_df.columns:
                 results_df["Datum"] = results_df["Datum"].apply(_de_date)
-            results_df = results_df.sort_values("Rang", ascending=False)
-            # Pro Ticker nur das neueste Signal behalten
+            # Pro Ticker nur das neueste Signal behalten (nach Datum, nicht Rang!)
             if "Ticker" in results_df.columns and "Datum" in results_df.columns:
+                results_df["_date_sort"] = pd.to_datetime(
+                    results_df["Datum"], format="%d.%m.%Y", errors="coerce")
+                results_df = results_df.sort_values("_date_sort", ascending=False)
                 results_df = results_df.drop_duplicates(subset=["Ticker", "Pattern"], keep="first")
+                results_df = results_df.drop(columns=["_date_sort"])
+            results_df = results_df.sort_values("Rang", ascending=False)
             st.session_state["scan_results"] = results_df
 
     # Datenstand immer in Sidebar (aus DB)
@@ -1295,10 +1299,16 @@ def page_empfehlungen():
             "SELECT MAX(created_at) FROM signals").fetchone()[0]
         _conn.close()
         _trade_ts = get_setting("last_trade_refresh")
+        from db import DB_PATH as _db_path
+        _conn2 = _db_connect()
+        _n_sigs = _conn2.execute("SELECT COUNT(*) FROM signals WHERE date = ?",
+                                 (dt.date.today().isoformat(),)).fetchone()[0]
+        _conn2.close()
         st.sidebar.caption("**Datenstand:**")
         st.sidebar.caption(f"Signale: {_fmt_db_ts(_sig_ts)}")
         if _trade_ts:
             st.sidebar.caption(f"Trades: {_fmt_db_ts(_trade_ts)}")
+        st.sidebar.caption(f"DB: {_db_path} ({_n_sigs} heute)")
     except Exception:
         pass
 
