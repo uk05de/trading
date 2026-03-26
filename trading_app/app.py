@@ -2290,6 +2290,22 @@ def page_konto():
         _chart_df = pd.DataFrame(_chart_data)
         st.line_chart(_chart_df, x="Datum", y="Saldo", use_container_width=True)
 
+    # --- DB Export ---
+    st.divider()
+    with st.expander("Datenbank-Export"):
+        from db import DB_PATH
+        if DB_PATH.exists():
+            _db_bytes = DB_PATH.read_bytes()
+            _db_size = len(_db_bytes) / 1024
+            st.caption(f"DB: {DB_PATH.name} ({_db_size:,.0f} KB)")
+            st.download_button(
+                "DB herunterladen",
+                data=_db_bytes,
+                file_name=f"trading_{dt.date.today().isoformat()}.db",
+                mime="application/x-sqlite3",
+                use_container_width=True,
+            )
+
 
 # =========================================================================
 # PAGE: Signal-Historie
