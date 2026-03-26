@@ -1597,6 +1597,68 @@ def page_empfehlungen():
                     }}
                     st.rerun()
 
+    # --- Einzelticker-Check ---
+    st.divider()
+    with st.expander("Ticker prüfen (Debug)"):
+        _all_names = {**INDICES, **DAX_COMPONENTS, **TECDAX_COMPONENTS,
+                      **MDAX_COMPONENTS}
+        _chk_c1, _chk_c2 = st.columns([3, 1])
+        with _chk_c1:
+            _chk_ticker = st.selectbox(
+                "Ticker", options=sorted(_all_names.keys()),
+                format_func=lambda t: f"{t} — {_all_names[t]}",
+                key="chk_ticker",
+                index=None,
+                placeholder="Ticker wählen...",
+            )
+        with _chk_c2:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            _chk_go = st.button("Prüfen", key="chk_go", use_container_width=True)
+
+        if _chk_go and _chk_ticker:
+            with st.spinner(f"Lade {_chk_ticker}..."):
+                from scanner import _download
+                from indicators import compute_all
+                from patterns import detect_patterns
+
+                _chk_df = _download(_chk_ticker)
+                if _chk_df is None:
+                    st.error(f"Download fehlgeschlagen für {_chk_ticker}")
+                else:
+                    if isinstance(_chk_df.columns, pd.MultiIndex):
+                        _chk_df.columns = [c[0] for c in _chk_df.columns]
+                    _chk_df = compute_all(_chk_df)
+                    _chk_patterns = detect_patterns(_chk_df)
+
+                    _last = _chk_df.iloc[-1]
+                    st.markdown(
+                        f"**{_all_names.get(_chk_ticker, _chk_ticker)}** · "
+                        f"Close: {_last['Close']:.2f} · "
+                        f"EMA20: {_last['EMA20']:.2f} · "
+                        f"EMA50: {_last['EMA50']:.2f} · "
+                        f"ADX: {_last.get('ADX', 0):.1f} · "
+                        f"RSI: {_last.get('RSI', 0):.1f} · "
+                        f"Daten: {len(_chk_df)} Tage ({_chk_df.index[0].strftime('%d.%m.%Y')} – {_chk_df.index[-1].strftime('%d.%m.%Y')})"
+                    )
+
+                    if _chk_patterns:
+                        _p_rows = []
+                        for p in _chk_patterns:
+                            _risk = abs(p["entry"] - p["stop_loss"])
+                            _target = round(p["entry"] + 2.0 * _risk, 2) if p.get("direction", "LONG") == "LONG" else round(p["entry"] - 2.0 * _risk, 2)
+                            _p_rows.append({
+                                "Pattern": p["pattern"],
+                                "Richtung": p.get("direction", "LONG"),
+                                "Entry": p["entry"],
+                                "Stop-Loss": p["stop_loss"],
+                                "Target (2R)": _target,
+                                "SL-Dist%": f"{_risk / p['entry'] * 100:.1f}%",
+                                "Detail": p.get("detail", ""),
+                            })
+                        st.dataframe(pd.DataFrame(_p_rows), hide_index=True, width="stretch")
+                    else:
+                        st.info("Keine Patterns erkannt.")
+
 
 # =========================================================================
 # PAGE: Meine Trades

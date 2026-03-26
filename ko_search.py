@@ -254,6 +254,7 @@ def lookup_isin(isin: str) -> dict | None:
         emittent, open_end, product_type, underlying_price,
         ko_distance_pct, intrinsic_value
     """
+    isin = isin.strip().upper()
     cached = _get_cached(isin)
     if cached is not None:
         return cached
