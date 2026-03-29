@@ -461,6 +461,25 @@ Kapital laengst anderswo investiert.
 **Entscheidung:** Target R/R=2.0 und Pattern-SL (min 5%) sind gut kalibriert.
 Keine Aenderung noetig.
 
+### Test 14: SL/Target verschieben (2026-03-29)
+
+Frage: Was passiert wenn SL 5-10% tiefer und/oder Target 5-10% hoeher gesetzt wird?
+
+| Konfiguration | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| Target +5% | 262 | 37.8% | **+407%** | 24.0% | **16.9** |
+| **Baseline (Original)** | **310** | **46.5%** | **+296%** | **23.7%** | **12.5** |
+| Target +10% | 218 | 31.2% | +260% | 25.4% | 10.2 |
+| SL -10% | 173 | 59.0% | +99% | 21.6% | 4.6 |
+| SL -5% | 218 | 51.8% | +62% | 29.7% | 2.1 |
+| SL -5%, Target +10% | 150 | 28.0% | +2% | 43.3% | 0.0 |
+
+Target +5% zeigt bessere Rendite/Effizienz, aber WR sinkt auf 37.8% (nur 1 von 3
+Trades gewinnt). SL verschieben verschlechtert alles — mehr Luft bringt keinen Mehrwert.
+
+**Entscheidung:** Verworfen. Target +5% sieht im Backtest gut aus, aber 37.8% WR
+bedeutet laengere Verlustserien — psychologisch schwer durchzuhalten. Baseline bleibt.
+
 ---
 
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)

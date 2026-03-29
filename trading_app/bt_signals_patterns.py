@@ -311,6 +311,8 @@ def collect_pattern_signals(cfg: BacktestConfig,
                             scale_in_steps: int = 3,
                             scale_in_risk: bool = False,
                             override_sl_pct: float = 0.0,
+                            sl_shift_pct: float = 0.0,
+                            target_shift_pct: float = 0.0,
                             force_rescan: bool = False,
                             verbose: bool = True) -> pd.DataFrame:
     """
@@ -339,7 +341,10 @@ def collect_pattern_signals(cfg: BacktestConfig,
     else:
         si_suffix = ""
     sl_suffix = f"_sl{override_sl_pct:.0f}" if override_sl_pct > 0 else ""
-    _extra = trail_suffix + be_suffix + si_suffix + sl_suffix
+    shift_suffix = ""
+    if sl_shift_pct != 0 or target_shift_pct != 0:
+        shift_suffix = f"_sh{sl_shift_pct:.0f}s{target_shift_pct:.0f}t"
+    _extra = trail_suffix + be_suffix + si_suffix + sl_suffix + shift_suffix
     _extra = trail_suffix + be_suffix + si_suffix
     if target_rr is not None:
         cache = f"data/signals_patterns_rr{target_rr:.1f}{_extra}.pkl"
@@ -424,6 +429,18 @@ def collect_pattern_signals(cfg: BacktestConfig,
                     sl = entry * (1 - override_sl_pct / 100)
                 else:
                     sl = entry * (1 + override_sl_pct / 100)
+
+            # SL/Target verschieben (SL weiter weg, Target weiter weg)
+            if sl_shift_pct != 0:
+                if direction == "LONG":
+                    sl = sl * (1 - sl_shift_pct / 100)  # SL tiefer
+                else:
+                    sl = sl * (1 + sl_shift_pct / 100)  # SL hoeher (SHORT)
+            if target_shift_pct != 0:
+                if direction == "LONG":
+                    target = target * (1 + target_shift_pct / 100)  # Target hoeher
+                else:
+                    target = target * (1 - target_shift_pct / 100)  # Target tiefer (SHORT)
 
             # Trade auswerten
             if scale_in_risk or scale_in_pct > 0:
