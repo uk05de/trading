@@ -428,6 +428,39 @@ fehlerhaft weil P/L auf Avg-Entry statt Gesamtinvestment berechnet wurde.
 Scale-In funktioniert vermutlich bei laengerer Haltedauer / fundamentaleren Signalen.
 Reports: results/2026-03-29_0010_scale_in_corrected/, results/2026-03-29_0303_scale_in_final/
 
+### Analyse 13: Post-Exit Kursverhalten (2026-03-29)
+
+Frage: Sind Target und SL gut kalibriert? Was passiert nach dem Exit?
+Datenbasis: 955 Signale (ema50_bounce + gap_up_continuation), R/R=2.0.
+
+**TARGET-TRADES (401 Trades) — "Verkaufen wir zu frueh?"**
+
+| Nach Exit | Median | Weiter gestiegen | Stark >5% | Gefallen <-5% |
+|---|---|---|---|---|
+| 5 Tage | +0.0% | 50% | 18% | 18% |
+| 10 Tage | +0.9% | 56% | 29% | 21% |
+| 20 Tage | +0.6% | 53% | 35% | 27% |
+| 50 Tage | +4.6% | 60% | 49% | 28% |
+
+Fazit: Target bei R/R=2.0 ist gut. Kurzfristig (5d) Muenzwurf — kein Geld
+liegen gelassen. Langfristig steigt es oft weiter, aber das ist Markt-Drift.
+
+**STOP-TRADES (530 Trades) — "Ist der SL zu eng?"**
+
+| Nach Exit | Zurueck ueber Entry | Haette Target erreicht | Max Erholung Median |
+|---|---|---|---|
+| 5 Tage | 22% | **1%** | -3.1% |
+| 10 Tage | 36% | **4%** | -2.0% |
+| 20 Tage | 54% | **12%** | +0.5% |
+| 50 Tage | 71% | **29%** | +5.6% |
+
+Fazit: SL ist NICHT zu eng. Nur 1% der SL-Trades haetten kurzfristig (5d)
+das Target doch erreicht. Selbst nach 50 Tagen nur 29% — und da ist das
+Kapital laengst anderswo investiert.
+
+**Entscheidung:** Target R/R=2.0 und Pattern-SL (min 5%) sind gut kalibriert.
+Keine Aenderung noetig.
+
 ---
 
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)
