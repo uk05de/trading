@@ -30,6 +30,117 @@ CACHE_PATH = "data/signals_patterns_ct.pkl"
 
 
 # ---------------------------------------------------------------------------
+# Scale-In Auswertung: gestaffelter Einstieg in 2-3 Tranchen
+# ---------------------------------------------------------------------------
+
+def _evaluate_trade_scale_in(df: pd.DataFrame, signal_idx: int,
+                              direction: str, entry: float, target: float,
+                              stop_loss: float, step_pct: float = 0,
+                              n_steps: int = 3,
+                              use_risk_steps: bool = False) -> dict:
+    """
+    Trade-Auswertung mit gestaffeltem Einstieg.
+
+    Zwei Modi:
+      step_pct > 0:     Fixe Prozent-Stufen (z.B. 3% = Entry, Entry-3%, Entry-6%)
+      use_risk_steps:   Stufen relativ zum Risk (Entry, Entry-0.33R, Entry-0.67R)
+
+    Returns: wie _evaluate_trade, plus avg_entry und n_tranches.
+    """
+    future = df.iloc[signal_idx + 1: signal_idx + 1 + MAX_HOLD_DAYS]
+
+    # Kauf-Levels berechnen
+    risk = abs(entry - stop_loss)
+    if use_risk_steps and risk > 0:
+        # Gleichmäßig zwischen Entry und SL verteilen
+        if direction == "LONG":
+            buy_levels = [entry - i * risk / n_steps for i in range(n_steps)]
+        else:
+            buy_levels = [entry + i * risk / n_steps for i in range(n_steps)]
+    elif step_pct > 0:
+        if direction == "LONG":
+            buy_levels = [entry - i * step_pct / 100 * entry for i in range(n_steps)]
+        else:
+            buy_levels = [entry + i * step_pct / 100 * entry for i in range(n_steps)]
+    else:
+        buy_levels = [entry]
+
+    # Tranche 1 ist immer gekauft
+    n_total = len(buy_levels)  # geplante Tranchen
+    bought = [entry]
+    pending_levels = buy_levels[1:]
+
+    def _calc_pnl(exit_px, direction):
+        """P/L auf Basis des GESAMTEN geplanten Investments (n_total Tranchen).
+        Ungefuellte Tranchen = 0 P/L (Cash blieb uninvestiert)."""
+        total_pnl = 0.0
+        for bp in bought:
+            if direction == "LONG":
+                total_pnl += exit_px - bp
+            else:
+                total_pnl += bp - exit_px
+        # Bezogen auf das volle Investment (n_total × entry)
+        full_invest = n_total * entry
+        return round(total_pnl / full_invest * 100, 2) if full_invest > 0 else 0.0
+
+    for day_n, (date, row) in enumerate(future.iterrows(), 1):
+        low = float(row["Low"])
+        high = float(row["High"])
+
+        if direction == "LONG":
+            still_pending = []
+            for level in pending_levels:
+                if low <= level:
+                    bought.append(level)
+                else:
+                    still_pending.append(level)
+            pending_levels = still_pending
+
+            if low <= stop_loss:
+                return {"outcome": "STOP", "pnl_pct": _calc_pnl(stop_loss, direction),
+                        "days_held": day_n, "exit_price": stop_loss,
+                        "exit_date": date, "n_tranches": len(bought),
+                        "avg_entry": round(sum(bought) / len(bought), 2)}
+
+            if high >= target:
+                return {"outcome": "TARGET", "pnl_pct": _calc_pnl(target, direction),
+                        "days_held": day_n, "exit_price": target,
+                        "exit_date": date, "n_tranches": len(bought),
+                        "avg_entry": round(sum(bought) / len(bought), 2)}
+        else:
+            still_pending = []
+            for level in pending_levels:
+                if high >= level:
+                    bought.append(level)
+                else:
+                    still_pending.append(level)
+            pending_levels = still_pending
+
+            if high >= stop_loss:
+                return {"outcome": "STOP", "pnl_pct": _calc_pnl(stop_loss, direction),
+                        "days_held": day_n, "exit_price": stop_loss,
+                        "exit_date": date, "n_tranches": len(bought),
+                        "avg_entry": round(sum(bought) / len(bought), 2)}
+
+            if low <= target:
+                return {"outcome": "TARGET", "pnl_pct": _calc_pnl(target, direction),
+                        "days_held": day_n, "exit_price": target,
+                        "exit_date": date, "n_tranches": len(bought),
+                        "avg_entry": round(sum(bought) / len(bought), 2)}
+
+    if len(future) > 0:
+        exit_px = float(future.iloc[-1]["Close"])
+        return {"outcome": "TIMEOUT", "pnl_pct": _calc_pnl(exit_px, direction),
+                "days_held": len(future), "exit_price": exit_px,
+                "exit_date": future.index[-1], "n_tranches": len(bought),
+                "avg_entry": round(sum(bought) / len(bought), 2)}
+
+    return {"outcome": "NO_DATA", "pnl_pct": 0.0, "days_held": 0,
+            "exit_price": entry, "exit_date": None,
+            "n_tranches": 1, "avg_entry": entry}
+
+
+# ---------------------------------------------------------------------------
 # Trailing-Auswertung: SL nachziehen + Target updaten
 # ---------------------------------------------------------------------------
 
@@ -196,6 +307,10 @@ def collect_pattern_signals(cfg: BacktestConfig,
                             target_rr: float | None = None,
                             trailing: bool = False,
                             breakeven_pct: float = 0.0,
+                            scale_in_pct: float = 0.0,
+                            scale_in_steps: int = 3,
+                            scale_in_risk: bool = False,
+                            override_sl_pct: float = 0.0,
                             force_rescan: bool = False,
                             verbose: bool = True) -> pd.DataFrame:
     """
@@ -214,13 +329,22 @@ def collect_pattern_signals(cfg: BacktestConfig,
 
     Returns: DataFrame im gleichen Format wie bt_signals.collect_signals()
     """
-    # Cache-Pfad: unterschiedlich je nach target_rr, trailing, breakeven
+    # Cache-Pfad: unterschiedlich je nach target_rr, trailing, breakeven, scale-in
     trail_suffix = "_trail" if trailing else ""
     be_suffix = f"_be{breakeven_pct:.0f}" if breakeven_pct > 0 else ""
-    if target_rr is not None:
-        cache = f"data/signals_patterns_rr{target_rr:.1f}{trail_suffix}{be_suffix}.pkl"
+    if scale_in_risk:
+        si_suffix = f"_siR{scale_in_steps}"
+    elif scale_in_pct > 0:
+        si_suffix = f"_si{scale_in_pct:.0f}x{scale_in_steps}"
     else:
-        cache = CACHE_PATH.replace(".pkl", f"{trail_suffix}{be_suffix}.pkl") if (trailing or be_suffix) else CACHE_PATH
+        si_suffix = ""
+    sl_suffix = f"_sl{override_sl_pct:.0f}" if override_sl_pct > 0 else ""
+    _extra = trail_suffix + be_suffix + si_suffix + sl_suffix
+    _extra = trail_suffix + be_suffix + si_suffix
+    if target_rr is not None:
+        cache = f"data/signals_patterns_rr{target_rr:.1f}{_extra}.pkl"
+    else:
+        cache = CACHE_PATH.replace(".pkl", f"{_extra}.pkl") if _extra else CACHE_PATH
 
     if not force_rescan and os.path.exists(cache):
         if verbose:
@@ -273,7 +397,7 @@ def collect_pattern_signals(cfg: BacktestConfig,
 
             sl_dist_pct = risk / entry
 
-            # Target bestimmen
+            # Target bestimmen (immer auf Basis des ORIGINALEN SL/Risk)
             if target_rr is not None:
                 # Fixes R/R
                 if direction == "LONG":
@@ -294,8 +418,20 @@ def collect_pattern_signals(cfg: BacktestConfig,
                 reward = abs(target - entry)
                 rr = round(reward / risk, 2) if risk > 0 else 0.0
 
+            # SL-Override NACH Target-Berechnung (Target bleibt vom Original)
+            if override_sl_pct > 0:
+                if direction == "LONG":
+                    sl = entry * (1 - override_sl_pct / 100)
+                else:
+                    sl = entry * (1 + override_sl_pct / 100)
+
             # Trade auswerten
-            if breakeven_pct > 0:
+            if scale_in_risk or scale_in_pct > 0:
+                outcome = _evaluate_trade_scale_in(
+                    df, idx_pos, direction, entry, target, sl,
+                    step_pct=scale_in_pct, n_steps=scale_in_steps,
+                    use_risk_steps=scale_in_risk)
+            elif breakeven_pct > 0:
                 outcome = _evaluate_trade_breakeven(
                     df, idx_pos, direction, entry, target, sl, breakeven_pct)
             elif trailing and direction == "LONG":

@@ -685,6 +685,125 @@ def grid_patterns(verbose: bool = True, report: bool = True) -> list[BacktestRes
     return all_results
 
 
+# ─── Scale-In Test ───────────────────────────────────────────────────────
+
+def test_scale_in(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
+    """
+    Test: Gestaffelter Einstieg.
+
+    A) Risk-basiert: Stufen innerhalb des bestehenden SL (Entry, Entry-0.33R, Entry-0.67R)
+    B) Prozent-basiert mit erweitertem SL: SL weiter weg fuer Scale-In-Raum
+    """
+    from bt_signals_patterns import collect_pattern_signals
+
+    WINNER_PATTERNS = ["ema50_bounce", "gap_up_continuation"]
+    force = "--rescan" in sys.argv
+
+    pat_base = preset_baseline_v1()
+    sizing_base = replace(pat_base,
+                          min_invest=25.0,
+                          sizing_method="risk_free", sizing_pct=0.02,
+                          max_invest=2500.0,
+                          pattern_filter=WINNER_PATTERNS,
+                          max_positions=5,
+                          min_sl_dist=0.05,
+                          signal_ranking="persistence_score",
+                          persistence_weight=0.2,
+                          persistence_lookback=10)
+
+    all_results: list[BacktestResult] = []
+    ranking: list[dict] = []
+
+    def _add(name, signals, cfg_override=None):
+        cfg = replace(sizing_base, name=name)
+        if cfg_override:
+            cfg = replace(cfg, **cfg_override)
+        r = simulate(signals, cfg)
+        all_results.append(r)
+        ranking.append({"name": name, "trades": r.n_trades, "win_rate": r.win_rate,
+                        "total_return": r.total_return, "max_dd": r.max_drawdown,
+                        "efficiency": r.efficiency, "end_capital": r.end_capital})
+
+    # Baseline
+    if verbose:
+        print(f"\n  === BASELINE ===")
+    baseline = collect_pattern_signals(
+        replace(pat_base, persistence_lookback=10),
+        target_rr=2.0, force_rescan=force, verbose=verbose)
+    if baseline.empty:
+        print("  Keine Signale!")
+        return []
+    _add("Einmal-Kauf (Baseline)", baseline)
+
+    # A) Risk-basiert: Stufen innerhalb SL
+    if verbose:
+        print(f"\n  === A) RISK-BASIERT (Stufen innerhalb SL) ===")
+    for n in [2, 3]:
+        if verbose:
+            print(f"\n  Scale-In {n}x (Risk-Stufen)...")
+        sig = collect_pattern_signals(
+            replace(pat_base, persistence_lookback=10),
+            target_rr=2.0, scale_in_risk=True, scale_in_steps=n,
+            force_rescan=force, verbose=verbose)
+        if not sig.empty:
+            _add(f"A) {n}x Risk-Stufen (SL=5%)", sig)
+
+    # B) Fixer SL + Scale-In (Börsenbrief-Strategie)
+    if verbose:
+        print(f"\n  === B) FIXER SL + SCALE-IN ===")
+    for sl_pct in [12, 15, 20]:
+        step_pct = 5
+        # SL = sl_pct% unter Entry, Stufen je step_pct%
+        if verbose:
+            print(f"\n  3x je {step_pct}%, SL fix {sl_pct}% (Target R/R=2.0)...")
+        sig = collect_pattern_signals(
+            replace(pat_base, persistence_lookback=10),
+            target_rr=2.0, scale_in_pct=step_pct, scale_in_steps=3,
+            override_sl_pct=sl_pct,
+            force_rescan=force, verbose=verbose)
+        if not sig.empty:
+            _add(f"B) 3x je {step_pct}%, SL fix {sl_pct}%", sig)
+
+    # Auch 3% Stufen
+    for sl_pct in [10, 12]:
+        step_pct = 3
+        if verbose:
+            print(f"\n  3x je {step_pct}%, SL fix {sl_pct}%...")
+        sig = collect_pattern_signals(
+            replace(pat_base, persistence_lookback=10),
+            target_rr=2.0, scale_in_pct=step_pct, scale_in_steps=3,
+            override_sl_pct=sl_pct,
+            force_rescan=force, verbose=verbose)
+        if not sig.empty:
+            _add(f"B) 3x je {step_pct}%, SL fix {sl_pct}%", sig)
+
+    # Ranking
+    if verbose and ranking:
+        ranking_df = pd.DataFrame(ranking).sort_values("efficiency", ascending=False)
+        print(f"\n  {'=' * 100}")
+        print(f"  SCALE-IN RANKING (nach Effizienz)")
+        print(f"  {'=' * 100}")
+        print(f"  {'#':>3s} {'Konfiguration':>35s} | {'Tr':>4s} {'WR':>6s} | "
+              f"{'Ret':>8s} {'DD':>6s} {'Eff':>5s} | {'Endkap.':>10s}")
+        print(f"  {'─' * 90}")
+        for i, (_, row) in enumerate(ranking_df.iterrows()):
+            print(f"  {i+1:>3d} {row['name']:>35s} | {row['trades']:>4.0f} {row['win_rate']:>5.1f}% | "
+                  f"{row['total_return']:>+7.1f}% {row['max_dd']:>5.1f}% {row['efficiency']:>5.1f} | "
+                  f"€{row['end_capital']:>9,.2f}")
+
+    if report and all_results:
+        run_dir = _make_run_dir(BacktestConfig(name="scale_in_v2"))
+        generate_compare_report(all_results, run_dir=run_dir)
+        for r in all_results:
+            generate_report(r, run_dir=run_dir, all_results=all_results)
+        if verbose:
+            print(f"\n  Reports: {run_dir}/")
+        import subprocess
+        subprocess.run(["open", str(run_dir / "report.html")])
+
+    return all_results
+
+
 # ─── Breakeven-Stop Test ─────────────────────────────────────────────────
 
 def test_breakeven(verbose: bool = True, report: bool = True) -> list[BacktestResult]:
@@ -932,6 +1051,9 @@ def main():
 
     elif "--pattern-grid" in args:
         grid_patterns()
+
+    elif "--scale-in" in args:
+        test_scale_in()
 
     elif "--breakeven" in args:
         test_breakeven()

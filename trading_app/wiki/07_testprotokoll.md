@@ -394,6 +394,40 @@ natuerlicher Qualitaetsfilter: hoehere WR (46.3%) und beste Effizienz (12.7).
 **Entscheidung:** Max 5 parallele Positionen beibehalten. Positions-Limit > Top-N/Tag.
 Reports: results/2026-03-25_1538_top1_per_day/
 
+### Test 12: Scale-In / Gestaffelter Einstieg (2026-03-29)
+
+Hypothese: Gestaffelter Kauf in 3 Tranchen (wie im Boersenbrief) verbessert
+den Durchschnitts-Entry und reduziert das Risiko.
+
+**A) Risk-Stufen innerhalb SL** (Entry, Entry-1/3R, Entry-2/3R, SL bleibt):
+
+| Konfiguration | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| **Einmal-Kauf (Baseline)** | **309** | **46.6%** | **+300%** | 23.7% | **12.6** |
+| 3x Risk-Stufen | 310 | 46.5% | +135% | 16.7% | 8.1 |
+
+**B) Fixer SL + Scale-In** (SL unabhaengig vom Pattern, z.B. 15% unter Entry):
+
+| Konfiguration | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| 3x je 5%, SL fix 15% | 179 | 58.1% | +44% | 23.2% | 1.9 |
+| 3x je 5%, SL fix 12% | 204 | 52.0% | +26% | 19.5% | 1.3 |
+| 3x je 3%, SL fix 15% | 179 | 58.1% | +52% | 25.7% | 2.0 |
+| 3x je 5%, SL fix 20% | 159 | 60.4% | +11% | 29.4% | 0.4 |
+
+**Ergebnis:** Scale-In verliert in JEDER Variante gegen Einmal-Kauf.
+- WR steigt bei weitem SL (58-60%), aber Rendite bricht ein
+- Problem: ema50_bounce startet oft direkt in die richtige Richtung
+- Nachkauf-Levels werden selten erreicht → nur 1/3 Kapital investiert → kleine Gewinne
+- Breiterer SL = groesserer Verlust pro Verliertrade
+
+Hinweis: Erster Test (ohne korrekte Tranchenberechnung) zeigte +1025% — war
+fehlerhaft weil P/L auf Avg-Entry statt Gesamtinvestment berechnet wurde.
+
+**Entscheidung:** Verworfen. Einmal-Kauf bleibt optimal fuer unser System.
+Scale-In funktioniert vermutlich bei laengerer Haltedauer / fundamentaleren Signalen.
+Reports: results/2026-03-29_0010_scale_in_corrected/, results/2026-03-29_0303_scale_in_final/
+
 ---
 
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)
