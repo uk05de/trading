@@ -482,6 +482,32 @@ bedeutet laengere Verlustserien — psychologisch schwer durchzuhalten. Baseline
 
 ---
 
+### Test 15: Zeitbasierter Stop (2026-03-29)
+
+Hypothese: Wenn ein Trade nach X Tagen noch X% unter Entry steht, hat das
+Pattern versagt → fruehzeitig rausgehen statt auf vollen SL zu warten.
+
+| Config | WR | Target | SL | Time-Stop | Netto | vs Baseline |
+|---|---|---|---|---|---|---|
+| **Baseline** | **49.4%** | 134 | 137 | 0 | **+1.198** | — |
+| 7d -2% | 40.3% | 119 | 83 | 93 | +1.146 | -52 |
+| 10d -3% | 41.3% | 119 | 86 | 83 | +1.154 | -44 |
+| 3d -2% | 39.9% | 116 | 87 | 88 | +1.117 | -80 |
+| 5d -2% | 37.2% | 109 | 87 | 97 | +846 | -352 |
+
+Time-Stop spart SL-Verluste (weniger SL-Hits), aber killt Trades die sich
+noch erholt haetten. Verlorene Gewinner kosten mehr als gesparte Verluste.
+
+Zusammenhang mit Analyse 13 (Post-Exit):
+- NACH SL-Hit: nur 1% erreichen Target → SL ist am richtigen Punkt
+- VOR SL-Hit bei -2%: viele Trades drehen noch um → frueh rausgehen schadet
+- Der Pattern-SL (min 5%) markiert exakt die Kipplinie
+
+**Entscheidung:** Verworfen. Konsistente Erkenntnis aus Tests 10, 12, 14, 15:
+Nicht am Trade herumpfuschen — SL und Target laufen lassen.
+
+---
+
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)
 
 | Parameter | Wert |
