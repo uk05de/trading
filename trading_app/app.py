@@ -1,4 +1,4 @@
-"""
+c"""
 app.py – DAX / TecDAX / MDAX Dashboard.
 
 Run with:  .venv/bin/streamlit run app.py
@@ -1876,7 +1876,7 @@ def page_trades():
             _running = _ot_df.copy()
 
         _render_trade_table(_critical, "Kritisch — Handlungsbedarf", "🔴", "critical")
-        _render_trade_table(_target, "Ziel erreicht — Gewinnmitnahme prüfen", "🎯", "target")
+        _render_trade_table(_target, "Nahe Target / Target erreicht", "🎯", "target")
         _render_trade_table(_running, "Laufende Trades", "🟢", "running")
     else:
         st.caption("Keine offenen Trades.")
