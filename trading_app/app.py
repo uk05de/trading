@@ -1,4 +1,4 @@
-c"""
+"""
 app.py – DAX / TecDAX / MDAX Dashboard.
 
 Run with:  .venv/bin/streamlit run app.py
