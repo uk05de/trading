@@ -137,8 +137,16 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": str(e)})
         elif self.path == "/api/scan":
-            data = _full_scan()
-            self._send_json(data)
+            # Scan asynchron starten — sofort antworten, Scan im Hintergrund
+            import threading
+            def _run_scan_bg():
+                try:
+                    _full_scan()
+                    log.info("Background-Scan abgeschlossen")
+                except Exception as e:
+                    log.error("Background-Scan fehlgeschlagen: %s", e)
+            threading.Thread(target=_run_scan_bg, daemon=True).start()
+            self._send_json({"status": "scan_started"})
         else:
             self.send_error(404)
 
