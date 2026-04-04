@@ -143,10 +143,13 @@ class TradingAPIHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _send_json(self, data):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+        except BrokenPipeError:
+            pass  # Client hat Verbindung geschlossen (HA Timeout)
 
     def log_message(self, format, *args):
         log.info(format, *args)
