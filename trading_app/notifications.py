@@ -72,13 +72,14 @@ def _send_ha_notification(title: str, message: str, critical: bool = False):
             log.warning("Notification Fehler %d: %s", resp.status_code, resp.text[:200])
 
         # Persistente Notification in HA (vollständig lesbar)
+        _ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         requests.post(
             "http://supervisor/core/api/services/persistent_notification/create",
             headers=_headers, timeout=5,
             json={
                 "title": title,
                 "message": message,
-                "notification_id": f"trading_{title[:30].replace(' ', '_').lower()}",
+                "notification_id": f"trading_{_ts}",
             },
         )
     except Exception as e:
