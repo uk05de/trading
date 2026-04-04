@@ -551,18 +551,56 @@ fuer zusaetzliche Trades. Ergebnis bestaetigt manuelle Analyse.
 
 **Entscheidung:** Bestaetigt: Baseline gewinnt. Nicht am Trade herumpfuschen.
 
+### Test 18: Trend-Following nach Target (2026-04-04)
+
+Frage: Wenn ein Trade sein Target (2R) erreicht, kann man den Trend weiterreiten
+statt hart zu verkaufen? Post-Exit-Analyse (Test 13) zeigte: 60% steigen nach Target
+weiter (Median +4.6% nach 50d).
+
+Strategie: Bei Target (2R) nicht verkaufen, sondern SL auf +1R hochziehen (Gewinn
+gesichert), dann Trailing-SL (Close - X × ATR) aktivieren.
+
+| Config | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| Baseline (hard exit 2R) | 312 | 47.4% | +290% | 25.6% | 11.3 |
+| Lock 1R, Target 3R | 312 | 23.7% | +345% | 28.1% | 12.3 |
+| Lock 1R, Target 4R | 312 | 18.6% | +575% | 27.3% | 21.1 |
+| Lock 1R, Trail 1.5×ATR | 312 | 0.0% | +590% | 27.0% | 21.8 |
+| **Lock 1R, Trail 2.0×ATR** | **312** | **0.0%** | **+910%** | **26.2%** | **34.7** |
+| Lock 1R, Trail 3.0×ATR | 312 | 0.0% | +1111% | 28.2% | 39.3 |
+
+Validierung Trail 2.0×ATR:
+- 372 von 899 Signalen (41%) erreichen Target und gehen in Phase 2
+- 70% der Trail-Exits machen WENIGER als hard exit (-5.9% pro Trade)
+- 30% machen DEUTLICH MEHR (Top: thyssenkrupp +141%, Schaeffler +80%)
+- Die wenigen Big Winner treiben den Gesamtreturn (Avg +14.9% vs +12.9%)
+- Min Trail-Exit: +4.9% — kein Trade geht ins Minus (1R gesichert)
+- Haltedauer verdoppelt sich: 22d → 44d
+
+Positions-Vergleich (Trail 2×ATR ist auf jeder Stufe 3× besser):
+
+| Positionen | Baseline Return | Trail Return | Faktor |
+|---|---|---|---|
+| 5 | +290% | +910% | 3.1× |
+| 7 | +288% | +903% | 3.1× |
+| 10 | +219% | +691% | 3.2× |
+
+**Entscheidung:** UEBERNEHMEN. Lock 1R + Trail 2.0×ATR nach Target-Erreichen.
+Verdreifacht den Return bei gleichem Drawdown.
+Reports: results/2026-04-04_1129_trend_follow/, results/2026-04-04_1151_trend_follow_positions/
+
 ---
 
-## Aktueller bester Stand — Pattern-Signale (2026-03-25)
+## Aktueller bester Stand — Pattern-Signale (2026-04-04)
 
 | Parameter | Wert |
 |---|---|
 | Patterns | ema50_bounce + gap_up_continuation |
-| Target | Fix R/R=2.0 (Entry + 2 × Risk) |
+| Target | Fix R/R=2.0 (Entry + 2 × Risk) → Phase 2 Trigger |
+| Bei Target | SL auf +1R hochziehen, dann Trailing 2.0×ATR |
 | SL | Vom Pattern-Detektor, min 5% Distanz |
 | Sizing | Risk 2% freies Cash, max €2.500 Eigenkapital |
 | Ranking | persistence_score: combo_score + persistence × 0.2, Lookback 10 Tage |
-| Trailing | Nein (verschlechtert Performance) |
 | Markt-Veto | Keins (Trader entscheidet manuell) |
 | Pos-Limit / Einzahlung | Manuell (nicht im System) |
 
@@ -570,6 +608,7 @@ fuer zusaetzliche Trades. Ergebnis bestaetigt manuelle Analyse.
 
 ## Offene Fragen
 
+- Trend-Following in App einbauen (Phase 2 Logik)
 - US-Titel mit eigenem Markt-Kontext testen
 - Blocking-Dauer ggf. verkuerzen
 - Paper-Trading starten (min. 3 Monate)
