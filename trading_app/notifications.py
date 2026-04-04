@@ -140,19 +140,37 @@ def check_and_notify():
             if record_alert(ticker, "sl_warning", worst_r, msg):
                 _send_ha_notification("Trading: Nahe SL", msg)
 
-        # --- Target Milestones (bester Trade) ---
+        # --- Target / Phase-2 Alerts ---
+        # Bei 2R: Phase-2 Notification mit konkretem SL-Wert
+        for t in trades:
+            _phase = t.get("phase") or 1
+            _trail = t.get("trail_sl")
+            _r = calc_profit_r(t)
+            if _r is not None and _r >= 2.0 and _phase == 2 and _trail:
+                _ko = t.get("ko_level") or 0
+                _bv = t.get("bv") or 1
+                _d = t["direction"]
+                # Trail-SL in Aktienkurs umrechnen
+                from ko_calc import product_to_stock
+                _trail_stock = product_to_stock(_trail, _ko, _d, _bv)
+                msg = (f"{name}{suffix}: {_r:+.2f}R — Target erreicht!\n"
+                       f"SL auf +1R hochziehen: {_trail:.2f} EUR (Produkt) / "
+                       f"{_trail_stock:.2f} EUR (Aktie)")
+                if record_alert(ticker, "phase2_start", _r, msg):
+                    _send_ha_notification("Trading: TARGET — SL hochziehen!", msg, critical=True)
+
+        # Weitere Milestones
         milestones = [
             ("target_4r", 4.0, "4.0R Meilenstein!"),
             ("target_3r", 3.0, "3.0R Meilenstein!"),
-            ("target_25r", 2.5, "2.5R — Teilgewinne?"),
-            ("target_2r", 2.0, "Target erreicht — Gewinn mitnehmen?"),
+            ("target_25r", 2.5, "2.5R Meilenstein!"),
         ]
         for alert_type, threshold, hint in milestones:
             if best_r >= threshold:
                 msg = f"{name}{suffix}: {best_r:+.2f}R — {hint}"
                 if record_alert(ticker, alert_type, best_r, msg):
                     _send_ha_notification(f"Trading: {hint}", msg)
-                break  # Nur hoechsten neuen Milestone senden
+                break
 
 
 def cleanup_closed_alerts():
@@ -197,7 +215,17 @@ def send_evening_summary():
         avg_r = sum(r_values) / len(r_values)
         display_r = avg_r if len(r_values) > 1 else r_values[0]
 
-        line = f"  {name}{suffix}: {display_r:+.1f}R"
+        # Phase-2 Trail-SL Info
+        _trail_info = ""
+        for t in trades:
+            if (t.get("phase") or 1) == 2 and t.get("trail_sl"):
+                from ko_calc import product_to_stock
+                _ko = t.get("ko_level") or 0
+                _bv = t.get("bv") or 1
+                _trail_stock = product_to_stock(t["trail_sl"], _ko, t["direction"], _bv)
+                _trail_info = f" | Trail-SL: {t['trail_sl']:.2f} Prod / {_trail_stock:.2f} Aktie"
+
+        line = f"  {name}{suffix}: {display_r:+.1f}R{_trail_info}"
 
         if worst_r <= -0.8:
             sl_lines.append(line)

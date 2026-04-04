@@ -503,6 +503,45 @@ def refresh_open_trades() -> int:
                     if _prod_price and _prod_price.get("bid"):
                         trade_db_update["product_bid"] = _prod_price["bid"]
 
+                # Phase-2: Trail-SL nach Target-Erreichen
+                from ko_calc import calc_profit_r, stock_to_product
+                _pr = calc_profit_r(trade)
+                _ko = trade.get("ko_level")
+                _bv = trade.get("bv") or 1.0
+                _sl = trade.get("stop_loss")
+                _phase = trade.get("phase") or 1
+
+                if _pr is not None and _ko and _sl:
+                    if _pr >= 2.0 and _phase == 1:
+                        # Phase 2 aktivieren: SL auf +1R (Produkt-Ebene)
+                        _risk_stock = abs(_e - _sl)
+                        if _d == "LONG":
+                            _new_sl_stock = _e + _risk_stock  # +1R
+                        else:
+                            _new_sl_stock = _e - _risk_stock
+                        _new_sl_prod = stock_to_product(_new_sl_stock, _ko, _d, _bv)
+                        trade_db_update["phase"] = 2
+                        trade_db_update["trail_sl"] = round(_new_sl_prod, 4)
+                        log.info("PHASE2: %s #%d → SL auf +1R (%.4f Prod / %.2f Aktie)",
+                                 ticker, trade["id"], _new_sl_prod, _new_sl_stock)
+
+                    elif _phase == 2:
+                        # Trail-SL aktualisieren: Close - 2×ATR
+                        from indicators import compute_all
+                        _df_ind = compute_all(raw_df.copy())
+                        _atr = float(_df_ind["ATR"].iloc[-1]) if "ATR" in _df_ind.columns else _cur * 0.02
+                        if _d == "LONG":
+                            _trail_stock = _cur - 2.0 * _atr
+                            _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
+                        else:
+                            _trail_stock = _cur + 2.0 * _atr
+                            _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
+                        _old_trail = trade.get("trail_sl") or 0
+                        if _trail_prod > _old_trail:
+                            trade_db_update["trail_sl"] = round(_trail_prod, 4)
+                            log.info("TRAIL: %s #%d SL %.4f → %.4f (Aktie: %.2f)",
+                                     ticker, trade["id"], _old_trail, _trail_prod, _trail_stock)
+
                 update_trade(trade["id"], trade_db_update)
                 n_updated += 1
                 log.info("Refresh: %s #%d %s Kurs=%.2f", ticker, trade["id"], _d, _cur)

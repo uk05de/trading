@@ -34,8 +34,14 @@ def _connect() -> sqlite3.Connection:
 def init_db():
     """Verbindung zur DB testen. Schema wird extern verwaltet."""
     conn = _connect()
-    # Kurzer Verbindungstest
     conn.execute("SELECT 1")
+    # Phase-2 Spalten (Trend-Following nach Target)
+    for col, typ, default in [("trail_sl", "REAL", "NULL"), ("phase", "INTEGER", "1")]:
+        try:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ} DEFAULT {default}")
+            conn.commit()
+        except Exception:
+            pass  # Spalte existiert bereits
     conn.close()
 
 
@@ -648,7 +654,7 @@ def update_trade(trade_id: int, updates: dict):
     allowed = ["direction", "entry_date", "entry_price", "exit_date", "exit_price",
                "target", "stop_loss", "size", "notes", "fees", "status",
                "return_pct", "return_abs",
-               "current_price",
+               "current_price", "trail_sl", "phase",
                "is_test", "wkn", "ko_level", "bv",
                "isin", "emittent", "product_bid", "entry_fees",
                "post_exit_5d_pct", "post_exit_10d_pct", "post_exit_20d_pct",
