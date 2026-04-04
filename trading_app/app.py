@@ -2099,35 +2099,6 @@ def page_trades():
     else:
         st.caption("Noch keine geschlossenen Trades.")
 
-    # --- Notification-Log ---
-    st.divider()
-    with st.expander("Notification-Verlauf"):
-        from db import get_notifications
-        _notifs = get_notifications(limit=30)
-        if _notifs:
-            for n in _notifs:
-                _ts = _fmt_db_ts_local(n["created_at"]) if n.get("created_at") else ""
-                _cat = n.get("category") or ""
-                st.markdown(f"**{_ts}** · `{_cat}` · **{n['title']}**")
-                st.caption(n["message"])
-        else:
-            st.caption("Noch keine Notifications.")
-
-
-def _fmt_db_ts_local(ts_str):
-    """UTC Timestamp nach Lokalzeit formatieren."""
-    if not ts_str:
-        return ""
-    try:
-        import zoneinfo
-        _d = dt.datetime.fromisoformat(ts_str)
-        if _d.tzinfo is None:
-            _d = _d.replace(tzinfo=dt.timezone.utc).astimezone(
-                zoneinfo.ZoneInfo("Europe/Berlin"))
-        return _d.strftime("%d.%m.%Y %H:%M")
-    except (ValueError, TypeError):
-        return ts_str
-
 
 # =========================================================================
 # PAGE: Konto (Buchungen)
@@ -2456,12 +2427,83 @@ def page_wiki():
                 st.warning("Bitte Dateiname und Titel angeben.")
 
 # =========================================================================
+# PAGE: Notifications
+# =========================================================================
+def _fmt_db_ts_local(ts_str):
+    """UTC Timestamp nach Lokalzeit formatieren."""
+    if not ts_str:
+        return ""
+    try:
+        import zoneinfo
+        _d = dt.datetime.fromisoformat(ts_str)
+        if _d.tzinfo is None:
+            _d = _d.replace(tzinfo=dt.timezone.utc).astimezone(
+                zoneinfo.ZoneInfo("Europe/Berlin"))
+        return _d.strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        return ts_str
+
+
+def page_notifications():
+    st.header("Notifications")
+
+    from db import get_notifications, _connect as _db_connect
+
+    # Filter
+    _fc1, _fc2 = st.columns(2)
+    with _fc1:
+        _cat_options = ["Alle", "sl_breach", "sl_warning", "sl_reminder",
+                        "phase2_start", "milestone", "evening_summary"]
+        _cat_filter = st.selectbox("Kategorie", _cat_options, key="notif_cat")
+    with _fc2:
+        _age_options = {"Heute": 0, "3 Tage": 3, "7 Tage": 7, "30 Tage": 30, "Alle": 999}
+        _age_label = st.selectbox("Zeitraum", list(_age_options.keys()), key="notif_age")
+
+    _age_days = _age_options[_age_label]
+
+    # Aus DB laden
+    conn = _db_connect()
+    if _age_days < 999:
+        _cutoff = (dt.date.today() - dt.timedelta(days=_age_days)).isoformat()
+        _query = "SELECT * FROM notification_log WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100"
+        _params = (_cutoff,)
+    else:
+        _query = "SELECT * FROM notification_log ORDER BY created_at DESC LIMIT 100"
+        _params = ()
+    rows = conn.execute(_query, _params).fetchall()
+    conn.close()
+
+    _notifs = [dict(r) for r in rows]
+    if _cat_filter != "Alle":
+        _notifs = [n for n in _notifs if n.get("category") == _cat_filter]
+
+    st.caption(f"{len(_notifs)} Notifications")
+
+    if _notifs:
+        for n in _notifs:
+            _ts = _fmt_db_ts_local(n.get("created_at"))
+            _cat = n.get("category") or ""
+            _ticker = n.get("ticker") or ""
+            _header = f"**{_ts}**"
+            if _cat:
+                _header += f" · `{_cat}`"
+            if _ticker:
+                _header += f" · {_ticker}"
+            st.markdown(f"{_header}\\\n**{n['title']}**")
+            st.caption(n["message"])
+            st.divider()
+    else:
+        st.info("Keine Notifications fuer diesen Filter.")
+
+
+# =========================================================================
 # Navigation Setup + Run
 # =========================================================================
 pg = st.navigation([
     st.Page(page_empfehlungen, title="Empfehlungen", default=True),
     st.Page(page_trades, title="Trades"),
     st.Page(page_konto, title="Konto"),
+    st.Page(page_notifications, title="Notifications"),
     st.Page(page_historie, title="Historie"),
     st.Page(page_wiki, title="Wiki"),
 ])
