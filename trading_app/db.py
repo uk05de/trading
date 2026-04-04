@@ -41,8 +41,44 @@ def init_db():
             conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ} DEFAULT {default}")
             conn.commit()
         except Exception:
-            pass  # Spalte existiert bereits
+            pass
+    # Notification-Log
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            title       TEXT NOT NULL,
+            message     TEXT NOT NULL,
+            category    TEXT,
+            ticker      TEXT
+        )
+    """)
+    conn.commit()
     conn.close()
+
+
+def log_notification(title: str, message: str, category: str = None,
+                     ticker: str = None):
+    """Notification in der DB speichern."""
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO notification_log (title, message, category, ticker) "
+        "VALUES (?, ?, ?, ?)",
+        (title, message, category, ticker),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_notifications(limit: int = 50) -> list[dict]:
+    """Letzte Notifications aus der DB laden."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM notification_log ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

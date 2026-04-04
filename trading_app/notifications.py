@@ -41,8 +41,16 @@ def _get_notify_service() -> str:
     return _notify_service
 
 
-def _send_ha_notification(title: str, message: str, critical: bool = False):
-    """Notification via HA API senden."""
+def _send_ha_notification(title: str, message: str, critical: bool = False,
+                          category: str = None, ticker: str = None):
+    """Notification via HA API senden + in DB loggen."""
+    # Immer in DB loggen (überlebt HA-Neustarts)
+    try:
+        from db import log_notification
+        log_notification(title, message, category=category, ticker=ticker)
+    except Exception as e:
+        log.warning("Notification DB-Log fehlgeschlagen: %s", e)
+
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
         log.info("Notification (lokal): %s — %s", title, message)
@@ -124,7 +132,8 @@ def check_and_notify():
         if worst_r <= -1.0:
             msg = f"{name}{suffix}: {worst_r:+.2f}R — Sofort pruefen!"
             if record_alert(ticker, "sl_breach", worst_r, msg):
-                _send_ha_notification("TRADING: SL DURCHBROCHEN", msg, critical=True)
+                _send_ha_notification("TRADING: SL DURCHBROCHEN", msg, critical=True,
+                                     category="sl_breach", ticker=ticker)
 
             # Reminder 60 Min nach Breach
             breach_time = get_alert_time(ticker, "sl_breach")
@@ -134,12 +143,14 @@ def check_and_notify():
                     msg = f"{name}{suffix}: {worst_r:+.2f}R — Trade immer noch offen!"
                     if record_alert(ticker, "sl_reminder", worst_r, msg):
                         _send_ha_notification(
-                            "REMINDER: SL immer noch durchbrochen!", msg, critical=True)
+                            "REMINDER: SL immer noch durchbrochen!", msg, critical=True,
+                            category="sl_reminder", ticker=ticker)
 
         elif worst_r <= -0.8:
             msg = f"{name}{suffix}: {worst_r:+.2f}R — Stop-Order gesetzt?"
             if record_alert(ticker, "sl_warning", worst_r, msg):
-                _send_ha_notification("Trading: Nahe SL", msg)
+                _send_ha_notification("Trading: Nahe SL", msg,
+                                     category="sl_warning", ticker=ticker)
 
         # --- Target / Phase-2 Alerts ---
         # Bei 2R: Phase-2 Notification mit konkretem SL-Wert
@@ -158,7 +169,8 @@ def check_and_notify():
                        f"SL auf +1R hochziehen: {_trail:.2f} EUR (Produkt) / "
                        f"{_trail_stock:.2f} EUR (Aktie)")
                 if record_alert(ticker, "phase2_start", _r, msg):
-                    _send_ha_notification("Trading: TARGET — SL hochziehen!", msg, critical=True)
+                    _send_ha_notification("Trading: TARGET — SL hochziehen!", msg, critical=True,
+                                         category="phase2_start", ticker=ticker)
 
         # Weitere Milestones
         milestones = [
@@ -170,7 +182,8 @@ def check_and_notify():
             if best_r >= threshold:
                 msg = f"{name}{suffix}: {best_r:+.2f}R — {hint}"
                 if record_alert(ticker, alert_type, best_r, msg):
-                    _send_ha_notification(f"Trading: {hint}", msg)
+                    _send_ha_notification(f"Trading: {hint}", msg,
+                                         category="milestone", ticker=ticker)
                 break
 
 
@@ -260,4 +273,5 @@ def send_evening_summary():
         "Trading: Abend-Zusammenfassung",
         message,
         critical=has_critical,
+        category="evening_summary",
     )

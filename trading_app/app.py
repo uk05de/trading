@@ -2099,6 +2099,35 @@ def page_trades():
     else:
         st.caption("Noch keine geschlossenen Trades.")
 
+    # --- Notification-Log ---
+    st.divider()
+    with st.expander("Notification-Verlauf"):
+        from db import get_notifications
+        _notifs = get_notifications(limit=30)
+        if _notifs:
+            for n in _notifs:
+                _ts = _fmt_db_ts_local(n["created_at"]) if n.get("created_at") else ""
+                _cat = n.get("category") or ""
+                st.markdown(f"**{_ts}** · `{_cat}` · **{n['title']}**")
+                st.caption(n["message"])
+        else:
+            st.caption("Noch keine Notifications.")
+
+
+def _fmt_db_ts_local(ts_str):
+    """UTC Timestamp nach Lokalzeit formatieren."""
+    if not ts_str:
+        return ""
+    try:
+        import zoneinfo
+        _d = dt.datetime.fromisoformat(ts_str)
+        if _d.tzinfo is None:
+            _d = _d.replace(tzinfo=dt.timezone.utc).astimezone(
+                zoneinfo.ZoneInfo("Europe/Berlin"))
+        return _d.strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        return ts_str
+
 
 # =========================================================================
 # PAGE: Konto (Buchungen)
