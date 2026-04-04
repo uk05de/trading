@@ -456,9 +456,33 @@ def collect_pattern_signals(cfg: BacktestConfig,
                     df, idx_pos, entry, target, sl,
                 )
             else:
-                outcome = _evaluate_trade(
-                    df, idx_pos, direction, entry, target, sl,
-                )
+                # _evaluate_trade mit konfigurierbarer max_hold_days
+                _mhd = cfg.max_hold_days or MAX_HOLD_DAYS
+                _future = df.iloc[idx_pos + 1: idx_pos + 1 + _mhd]
+                _found = False
+                for _day_n, (_dt, _row) in enumerate(_future.iterrows(), 1):
+                    _low, _high = float(_row["Low"]), float(_row["High"])
+                    if direction == "LONG":
+                        if _low <= sl:
+                            outcome = {"outcome": "STOP", "pnl_pct": round((sl - entry) / entry * 100, 2), "days_held": _day_n}
+                            _found = True; break
+                        if _high >= target:
+                            outcome = {"outcome": "TARGET", "pnl_pct": round((target - entry) / entry * 100, 2), "days_held": _day_n}
+                            _found = True; break
+                    else:
+                        if _high >= sl:
+                            outcome = {"outcome": "STOP", "pnl_pct": round((entry - sl) / entry * 100, 2), "days_held": _day_n}
+                            _found = True; break
+                        if _low <= target:
+                            outcome = {"outcome": "TARGET", "pnl_pct": round((entry - target) / entry * 100, 2), "days_held": _day_n}
+                            _found = True; break
+                if not _found:
+                    if len(_future) > 0:
+                        _exit_px = float(_future.iloc[-1]["Close"])
+                        _pnl = (_exit_px - entry) / entry * 100 if direction == "LONG" else (entry - _exit_px) / entry * 100
+                        outcome = {"outcome": "TIMEOUT", "pnl_pct": round(_pnl, 2), "days_held": len(_future)}
+                    else:
+                        outcome = {"outcome": "NO_DATA", "pnl_pct": 0.0, "days_held": 0}
 
             # Truncation-Check
             remaining = len(df) - 1 - idx_pos

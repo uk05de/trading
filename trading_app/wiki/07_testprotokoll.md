@@ -506,6 +506,51 @@ Zusammenhang mit Analyse 13 (Post-Exit):
 **Entscheidung:** Verworfen. Konsistente Erkenntnis aus Tests 10, 12, 14, 15:
 Nicht am Trade herumpfuschen — SL und Target laufen lassen.
 
+### Test 16: Haltedauer optimieren (2026-04-04)
+
+Frage: Timeout-Trades (100d ohne SL/Target) — bringt laengere Haltedauer mehr?
+63% der Timeouts sind im Plus (Median +3.5%), viele fast am Target.
+
+| Haltedauer | Trades | WR | Rendite | DD | Effizienz | Timeouts |
+|---|---|---|---|---|---|---|
+| **100d (Baseline)** | **308** | 46.8% | **+305%** | 23.7% | **12.9** | 239 |
+| 120d | 304 | 47.4% | +288% | 21.8% | 13.2 | 189 |
+| 150d | 307 | 46.9% | +279% | 26.2% | 10.6 | 145 |
+| 200d | 312 | 47.4% | +290% | 25.6% | 11.3 | 110 |
+
+Laengere Haltedauer rettet einzelne Timeouts, aber gebundenes Kapital fehlt
+fuer neue Trades. Netto-Effekt: null bis negativ.
+
+**Entscheidung:** 100d beibehalten. 120d marginal besser bei Effizienz, aber
+zu wenig Unterschied fuer eine Aenderung.
+
+### Test 17: Validierung Test 15 + BE-bei-Profit mit vollem Simulator (2026-04-04)
+
+Tests 15 (Time-Stop) und Breakeven-bei-Profit wurden urspruenglich mit
+manueller Outcome-Zaehlung gemacht. Hier die Validierung mit vollem
+Portfolio-Simulator (max 5 Positionen, Risk 2%, Persistenz-Ranking).
+
+**Time-Stop (voller Simulator):**
+
+| Config | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| **Baseline** | **312** | **47.4%** | **+290%** | 25.6% | **11.3** |
+| TS: 10d -3% | 312 | 45.2% | +249% | 25.6% | 9.7 |
+| TS: 7d -2% | 312 | 44.2% | +246% | 25.8% | 9.5 |
+
+**Breakeven bei Profit (voller Simulator):**
+
+| Config | Trades | WR | Rendite | DD | Effizienz |
+|---|---|---|---|---|---|
+| **Baseline** | **312** | **47.4%** | **+290%** | 25.6% | **11.3** |
+| BE +10% Aktie (~200% Prod) | 312 | 42.6% | +244% | 24.4% | 10.0 |
+| BE +7.5% Aktie (~150% Prod) | 312 | 38.8% | +192% | 23.1% | 8.3 |
+
+Gleiche Trade-Anzahl (312) — fruehere Exits machen keine Slots frei
+fuer zusaetzliche Trades. Ergebnis bestaetigt manuelle Analyse.
+
+**Entscheidung:** Bestaetigt: Baseline gewinnt. Nicht am Trade herumpfuschen.
+
 ---
 
 ## Aktueller bester Stand — Pattern-Signale (2026-03-25)
