@@ -1220,18 +1220,30 @@ def page_empfehlungen():
 
         # Alle Signale der letzten 10 Tage laden
         _all_signals = []
+        _all_signals_unfiltered = []
         _search_date = dt.date.today()
         for _d in range(10):
             _date_str = _search_date.isoformat()
             _day_signals = get_signals(date=_date_str, limit=500)
             _day_patterns = [s for s in _day_signals if s.get("pattern")]
+            _all_signals_unfiltered.extend(_day_patterns)
             # Ticker mit offenen Trades ausfiltern
             _day_patterns = [s for s in _day_patterns if s["ticker"] not in _open_tickers]
             _all_signals.extend(_day_patterns)
             _search_date -= dt.timedelta(days=1)
 
         if not _all_signals:
-            st.info("Keine Pattern-Signale in den letzten 10 Tagen gefunden. Scan starten!")
+            if _all_signals_unfiltered:
+                _blocked_tickers = sorted({s["ticker"] for s in _all_signals_unfiltered
+                                           if s["ticker"] in _open_tickers})
+                st.info(
+                    f"**Keine handelbaren Signale.** "
+                    f"Es gibt {len(_all_signals_unfiltered)} Signale in den letzten 10 Tagen, "
+                    f"aber alle für Ticker mit offenen Trades: "
+                    f"`{', '.join(_blocked_tickers)}`"
+                )
+            else:
+                st.info("Keine Pattern-Signale in den letzten 10 Tagen gefunden. Scan starten!")
         if _all_signals:
             from db import get_signal_persistence
             _persistence = get_signal_persistence(lookback_days=10)
