@@ -252,6 +252,7 @@ def _build_trade_row(t: dict) -> dict:
         "Hinweis": _hinweis,
         "Tage": (dt.date.today() - dt.date.fromisoformat(t["entry_date"])).days,
         "Ticker": t["ticker"],
+        "Quelle": "M" if t.get("source") == "manual" else "S",
     }
     return _row
 
@@ -1789,6 +1790,175 @@ def page_trades():
                 margin=dict(l=60, r=30, t=10, b=40),
             )
             st.plotly_chart(_pfig, use_container_width=True)
+
+    # --- Manueller Trade ---
+    st.divider()
+    with st.expander("Manuellen Trade eröffnen"):
+        from ko_search import search_ko, lookup_isin
+        from db import calc_position_size_risk
+
+        _all_names = {**DAX_COMPONENTS, **TECDAX_COMPONENTS, **MDAX_COMPONENTS}
+
+        _mt_c1, _mt_c2 = st.columns(2)
+        with _mt_c1:
+            _mt_ticker = st.selectbox(
+                "Ticker", options=sorted(_all_names.keys()),
+                format_func=lambda t: f"{t} — {_all_names[t]}",
+                key="mt_ticker", index=None, placeholder="Ticker wählen...",
+            )
+        with _mt_c2:
+            _mt_dir = st.selectbox("Richtung", ["LONG", "SHORT"], key="mt_dir")
+
+        if _mt_ticker:
+            _mt_name = _all_names.get(_mt_ticker, _mt_ticker)
+
+            _mt_c3, _mt_c4, _mt_c5 = st.columns(3)
+            with _mt_c3:
+                _mt_entry = st.number_input("Entry (Aktie)", min_value=0.01, step=0.1,
+                                            format="%.2f", key="mt_entry")
+            with _mt_c4:
+                _mt_sl = st.number_input("Stop-Loss (Aktie)", min_value=0.01, step=0.1,
+                                         format="%.2f", key="mt_sl")
+            with _mt_c5:
+                _mt_target = st.number_input("Target (Aktie)", min_value=0.01, step=0.1,
+                                             format="%.2f", key="mt_target")
+
+            if _mt_entry > 0 and _mt_sl > 0 and _mt_target > 0:
+                _mt_risk = abs(_mt_entry - _mt_sl)
+                _mt_rr = round(abs(_mt_target - _mt_entry) / _mt_risk, 1) if _mt_risk > 0 else 0
+                st.caption(f"R/R: {_mt_rr} · Risk: {_mt_risk:.2f} EUR · "
+                           f"SL-Dist: {_mt_risk / _mt_entry * 100:.1f}%")
+
+                # Produkt suchen
+                _mt_tabs = st.tabs(["Automatisch", "ISIN eingeben"])
+                _mt_selected = None
+
+                with _mt_tabs[0]:
+                    _mt_auto_key = f"mt_auto_{_mt_ticker}_{_mt_sl}"
+                    if _mt_auto_key not in st.session_state or st.button(
+                            "Suchen", key="mt_auto_search", use_container_width=True):
+                        with st.spinner("Suche KO-Zertifikate..."):
+                            st.session_state[_mt_auto_key] = search_ko(
+                                _mt_ticker, _mt_entry, _mt_sl, _mt_dir)
+                    _mt_auto = st.session_state.get(_mt_auto_key, [])
+                    if _mt_auto:
+                        _mt_sel_idx = st.selectbox(
+                            "Zertifikat", range(len(_mt_auto)),
+                            format_func=lambda i: (
+                                f"#{i+1} {_mt_auto[i]['wkn']} "
+                                f"({_mt_auto[i]['emittent']}, "
+                                f"Hebel {_mt_auto[i]['hebel']:.1f}x)"),
+                            key="mt_auto_select",
+                        )
+                        _mt_selected = _mt_auto[_mt_sel_idx]
+                    else:
+                        st.caption("Keine Zertifikate gefunden.")
+
+                with _mt_tabs[1]:
+                    _mt_isin_key = f"mt_isin_{_mt_ticker}"
+                    _ic1, _ic2 = st.columns([3, 1])
+                    with _ic1:
+                        _mt_isin = st.text_input("ISIN", placeholder="DE000...",
+                                                  key="mt_isin_input")
+                    with _ic2:
+                        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                        _mt_isin_go = st.button("Laden", key="mt_isin_btn",
+                                                use_container_width=True)
+                    if _mt_isin_go and _mt_isin and len(_mt_isin) >= 12:
+                        with st.spinner("Lade..."):
+                            _mp = lookup_isin(_mt_isin)
+                        if _mp:
+                            st.session_state[_mt_isin_key] = {
+                                "isin": _mp["isin"], "wkn": _mp.get("wkn", ""),
+                                "emittent": _mp.get("emittent", ""),
+                                "ko_level": _mp.get("ko_level", 0),
+                                "bid": _mp.get("bid", 0), "ask": 0,
+                                "hebel": _mp.get("leverage", 0),
+                                "bv": _mp.get("bv", 1.0), "spread_pct": 0,
+                                "ko_abstand_sl_pct": 0,
+                                "underlying": _mp.get("underlying", ""),
+                                "direction": _mp.get("direction", _mt_dir),
+                            }
+                        else:
+                            st.error("Nicht gefunden.")
+                    if _mt_isin_key in st.session_state:
+                        _mt_selected = st.session_state[_mt_isin_key]
+
+                # Metriken + Formular
+                if _mt_selected:
+                    _mt_ko = _mt_selected["ko_level"]
+                    _mt_bv = _mt_selected.get("bv", 1.0)
+                    _mt_ask = _mt_selected.get("ask") or _mt_selected.get("bid") or 0
+
+                    _cash_info = get_free_cash()
+                    _mt_size = 0
+                    if _mt_ask > 0 and _mt_ko:
+                        _ps = calc_position_size_risk(
+                            _cash_info["balance"], _mt_ask,
+                            _mt_entry, _mt_sl, _mt_ko, _mt_dir, _mt_bv)
+                        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                        _m1.metric("WKN", _mt_selected["wkn"])
+                        _m2.metric("Ask", f"{_mt_ask:.2f} EUR")
+                        _m3.metric("Hebel", f"{_mt_selected['hebel']:.1f}x")
+                        _m4.metric("Invest", _eur(_ps['invest_actual']))
+                        _m5.metric("Risiko bei SL", _eur(_ps['loss_at_sl']))
+                        _mt_size = _ps["size"]
+                    st.code(_mt_selected.get("isin", ""), language=None)
+
+                    _mt_kp_key = "mt_kp"
+                    _mt_sz_key = "mt_sz"
+                    if _mt_kp_key not in st.session_state:
+                        st.session_state[_mt_kp_key] = float(_mt_ask) if _mt_ask else 0.0
+                    if _mt_sz_key not in st.session_state:
+                        st.session_state[_mt_sz_key] = float(_mt_size) if _mt_size > 0 else 1.0
+
+                    st.divider()
+                    with st.form("mt_trade_form", clear_on_submit=True):
+                        _fc1, _fc2, _fc3 = st.columns(3)
+                        with _fc1:
+                            _mt_kaufpreis = st.number_input(
+                                "Kaufpreis (Produkt)", min_value=0.0,
+                                step=0.01, format="%.2f", key=_mt_kp_key)
+                        with _fc2:
+                            _mt_stueck = st.number_input(
+                                "Stück", min_value=1.0, step=1.0,
+                                format="%.0f", key=_mt_sz_key)
+                        with _fc3:
+                            _mt_date = st.date_input("Kaufdatum",
+                                                      value=dt.date.today(), key="mt_date")
+                        _mt_is_test = st.checkbox("Test-Trade", key="mt_test")
+                        _mt_submit = st.form_submit_button(
+                            "Trade eröffnen", type="primary", use_container_width=True)
+                        if _mt_submit and _mt_kaufpreis > 0:
+                            from ko_calc import product_to_stock
+                            _mt_actual_entry = product_to_stock(
+                                _mt_kaufpreis, _mt_ko, _mt_dir, _mt_bv)
+                            _mt_trade_id = open_trade({
+                                "signal_id": None,
+                                "ticker": _mt_ticker,
+                                "name": _mt_name,
+                                "direction": _mt_dir,
+                                "entry_date": _mt_date.isoformat(),
+                                "entry_price": _mt_actual_entry,
+                                "size": int(_mt_stueck),
+                                "target": _mt_target,
+                                "stop_loss": _mt_sl,
+                                "isin": _mt_selected.get("isin"),
+                                "wkn": _mt_selected.get("wkn"),
+                                "ko_level": _mt_ko,
+                                "bv": _mt_bv,
+                                "emittent": _mt_selected.get("emittent"),
+                                "entry_fees": 1.0,
+                                "is_test": int(_mt_is_test),
+                                "current_price": _mt_actual_entry,
+                                "product_bid": _mt_kaufpreis,
+                                "source": "manual",
+                            })
+                            if _mt_trade_id:
+                                st.success(f"Manueller Trade #{_mt_trade_id} eröffnet!")
+                                st.rerun()
+                            else:
+                                st.error("Fehler beim Eröffnen.")
 
     # --- Open trades ---
     st.divider()

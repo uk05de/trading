@@ -35,8 +35,9 @@ def init_db():
     """Verbindung zur DB testen. Schema wird extern verwaltet."""
     conn = _connect()
     conn.execute("SELECT 1")
-    # Phase-2 Spalten (Trend-Following nach Target)
-    for col, typ, default in [("trail_sl", "REAL", "NULL"), ("phase", "INTEGER", "1")]:
+    # Schema-Erweiterungen (idempotent)
+    for col, typ, default in [("trail_sl", "REAL", "NULL"), ("phase", "INTEGER", "1"),
+                               ("source", "TEXT", "'signal'")]:
         try:
             conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ} DEFAULT {default}")
             conn.commit()
@@ -540,18 +541,19 @@ def open_trade(trade: dict) -> int:
     trade.setdefault("entry_fees", 1.0)
     trade.setdefault("notes", None)
     trade.setdefault("current_price", trade.get("entry_price"))
+    trade.setdefault("source", "signal")
 
     cur = conn.execute("""
         INSERT INTO trades (signal_id, ticker, name, direction,
                             entry_date, entry_price, size,
                             target, stop_loss, notes, is_test,
                             wkn, ko_level, bv, isin, emittent, product_bid,
-                            entry_fees, current_price)
+                            entry_fees, current_price, source)
         VALUES (:signal_id, :ticker, :name, :direction,
                 :entry_date, :entry_price, :size,
                 :target, :stop_loss, :notes, :is_test,
                 :wkn, :ko_level, :bv, :isin, :emittent, :product_bid,
-                :entry_fees, :current_price)
+                :entry_fees, :current_price, :source)
     """, trade)
     trade_id = cur.lastrowid
     conn.commit()
