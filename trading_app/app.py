@@ -1732,22 +1732,25 @@ def page_trades():
                 _entry_stock = t["entry_price"]
                 _fees = (t.get("entry_fees") or 1.0) + 1.0
 
-                # Aktueller Kurs des Underlyings an diesem Tag
-                _prices = _price_cache.get(t["ticker"])
-                if _prices is None or _prices.empty:
+                # Defensive: ohne KO kein KO-Zertifikat → skippen
+                # (sonst Multiplikation Aktienkurs * Zertifikat-Stueckzahl = unsinnig)
+                if not _ko:
                     continue
-                # Nächsten verfügbaren Kurs finden (forward-fill)
-                _avail = _prices[_prices.index <= _day]
-                if _avail.empty:
-                    continue
-                _cur_stock = float(_avail.iloc[-1])
 
-                if _ko:
-                    _entry_p = stock_to_product(_entry_stock, _ko, _tdir, _bv)
-                    _cur_p = stock_to_product(_cur_stock, _ko, _tdir, _bv)
+                # Bei geschlossenen Trades AM exit_date den exit_price verwenden
+                if t.get("status") == "CLOSED" and t.get("exit_date") == _day_str:
+                    _cur_stock = t.get("exit_price") or _entry_stock
                 else:
-                    _entry_p = _entry_stock
-                    _cur_p = _cur_stock
+                    _prices = _price_cache.get(t["ticker"])
+                    if _prices is None or _prices.empty:
+                        continue
+                    _avail = _prices[_prices.index <= _day]
+                    if _avail.empty:
+                        continue
+                    _cur_stock = float(_avail.iloc[-1])
+
+                _entry_p = stock_to_product(_entry_stock, _ko, _tdir, _bv)
+                _cur_p = stock_to_product(_cur_stock, _ko, _tdir, _bv)
 
                 _invested_day += _entry_p * _size
                 _value_day += _cur_p * _size - _fees
