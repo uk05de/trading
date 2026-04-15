@@ -1591,9 +1591,8 @@ def page_empfehlungen():
             _all_checked = _edited["Auswahl"].all()
             if not _all_checked:
                 if st.button("Alle auswählen", type="tertiary", key="select_all_failed"):
-                    st.session_state["fail_editor"] = {"edited_rows": {
-                        str(i): {"Auswahl": True} for i in range(len(_stored_failed))
-                    }}
+                    # fail_editor State loeschen, damit Default-Werte wieder greifen
+                    st.session_state.pop("fail_editor", None)
                     st.rerun()
 
     # --- Einzelticker-Check ---
