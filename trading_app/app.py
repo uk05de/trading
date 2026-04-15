@@ -1749,6 +1749,10 @@ def page_trades():
                         continue
                     _cur_stock = float(_avail.iloc[-1])
 
+                # Sanity-Check: Kurs-Ausreißer (>10× Entry) = Datenfehler → skippen
+                if _cur_stock > _entry_stock * 10 or _cur_stock < _entry_stock / 10:
+                    continue
+
                 _entry_p = stock_to_product(_entry_stock, _ko, _tdir, _bv)
                 _cur_p = stock_to_product(_cur_stock, _ko, _tdir, _bv)
 

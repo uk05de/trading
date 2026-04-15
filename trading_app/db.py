@@ -424,19 +424,43 @@ def get_ai_assessments(ticker: str, limit: int = 2) -> list:
 # ---------------------------------------------------------------------------
 
 def save_prices(ticker: str, df):
-    """Store OHLCV DataFrame in the prices table."""
+    """Store OHLCV DataFrame in the prices table.
+
+    Sanity-Check: Preis-Ausreisser (>100× oder <1/100 vom Median der letzten
+    30 Werte) werden ignoriert — schuetzt vor Yahoo-Datenfehlern.
+    """
     conn = _connect()
+
+    # Median der letzten 30 Close-Werte als Referenz (Ausreisser-Erkennung)
+    prev = conn.execute(
+        "SELECT close FROM prices WHERE ticker = ? ORDER BY date DESC LIMIT 30",
+        (ticker,)).fetchall()
+    _ref = None
+    if len(prev) >= 10:
+        _vals = sorted(float(r["close"]) for r in prev)
+        _ref = _vals[len(_vals) // 2]  # Median
+
     rows = []
+    n_skipped = 0
     for idx, row in df.iterrows():
         date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+        close = float(row.get("Close", 0))
+        # Ausreisser-Check
+        if _ref and (close > _ref * 100 or close < _ref / 100):
+            n_skipped += 1
+            continue
         rows.append((
             ticker, date_str,
             float(row.get("Open", 0)),
             float(row.get("High", 0)),
             float(row.get("Low", 0)),
-            float(row.get("Close", 0)),
+            close,
             float(row.get("Volume", 0)),
         ))
+    if n_skipped:
+        import logging
+        logging.getLogger(__name__).warning(
+            "%s: %d Preis-Ausreisser ignoriert (Referenz: %.2f)", ticker, n_skipped, _ref)
     conn.executemany("""
         INSERT INTO prices (ticker, date, open, high, low, close, volume)
         VALUES (?, ?, ?, ?, ?, ?, ?)
