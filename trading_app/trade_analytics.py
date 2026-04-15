@@ -232,17 +232,15 @@ def get_trade_analytics() -> dict:
     for t in trades:
         sig_id = t.get("signal_id")
         if sig_id:
-            row = conn.execute("SELECT votes_detail FROM signals WHERE id = ?", (sig_id,)).fetchone()
-            if row:
-                vd = row["votes_detail"] or ""
-                if vd.startswith("Pattern:"):
-                    pat = vd.split("|")[0].replace("Pattern:", "").strip()
-                    if pat not in pattern_stats:
-                        pattern_stats[pat] = {"n": 0, "wins": 0, "returns": []}
-                    pattern_stats[pat]["n"] += 1
-                    pattern_stats[pat]["returns"].append(t.get("return_pct") or 0)
-                    if (t.get("return_pct") or 0) > 0:
-                        pattern_stats[pat]["wins"] += 1
+            row = conn.execute("SELECT pattern FROM signals WHERE id = ?", (sig_id,)).fetchone()
+            if row and row["pattern"]:
+                pat = row["pattern"]
+                if pat not in pattern_stats:
+                    pattern_stats[pat] = {"n": 0, "wins": 0, "returns": []}
+                pattern_stats[pat]["n"] += 1
+                pattern_stats[pat]["returns"].append(t.get("return_pct") or 0)
+                if (t.get("return_pct") or 0) > 0:
+                    pattern_stats[pat]["wins"] += 1
     conn.close()
 
     for pat in pattern_stats:
