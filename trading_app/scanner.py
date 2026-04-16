@@ -526,21 +526,32 @@ def refresh_open_trades() -> int:
                                  ticker, trade["id"], _new_sl_prod, _new_sl_stock)
 
                     elif _phase == 2:
-                        # Trail-SL aktualisieren: Close - 2×ATR
-                        from indicators import compute_all
-                        _df_ind = compute_all(raw_df.copy())
-                        _atr = float(_df_ind["ATR"].iloc[-1]) if "ATR" in _df_ind.columns else _cur * 0.02
-                        if _d == "LONG":
-                            _trail_stock = _cur - 2.0 * _atr
-                            _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
+                        # Sanity-Check: Kurs-Ausreißer ignorieren
+                        if _cur > _e * 10 or _cur < _e / 10:
+                            log.warning("TRAIL: %s Kurs-Ausreißer (%.2f vs Entry %.2f) → ignoriert",
+                                        ticker, _cur, _e)
                         else:
-                            _trail_stock = _cur + 2.0 * _atr
-                            _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
-                        _old_trail = trade.get("trail_sl") or 0
-                        if _trail_prod > _old_trail:
-                            trade_db_update["trail_sl"] = round(_trail_prod, 4)
-                            log.info("TRAIL: %s #%d SL %.4f → %.4f (Aktie: %.2f)",
-                                     ticker, trade["id"], _old_trail, _trail_prod, _trail_stock)
+                            # Trail-SL aktualisieren: Close - 2×ATR
+                            from indicators import compute_all
+                            _df_ind = compute_all(raw_df.copy())
+                            _atr = float(_df_ind["ATR"].iloc[-1]) if "ATR" in _df_ind.columns else _cur * 0.02
+                            if _d == "LONG":
+                                _trail_stock = _cur - 2.0 * _atr
+                                _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
+                            else:
+                                _trail_stock = _cur + 2.0 * _atr
+                                _trail_prod = stock_to_product(_trail_stock, _ko, _d, _bv)
+                            _old_trail = trade.get("trail_sl") or 0
+                            # Korrektur: wenn alter Trail offensichtlich korrupt (>100× Entry-Produkt)
+                            _entry_prod = stock_to_product(_e, _ko, _d, _bv)
+                            if _old_trail > _entry_prod * 100:
+                                log.warning("TRAIL: %s alter Trail-SL korrupt (%.2f) → reset", ticker, _old_trail)
+                                _old_trail = 0
+                                trade_db_update["trail_sl"] = round(_trail_prod, 4)
+                            elif _trail_prod > _old_trail:
+                                trade_db_update["trail_sl"] = round(_trail_prod, 4)
+                                log.info("TRAIL: %s #%d SL %.4f → %.4f (Aktie: %.2f)",
+                                         ticker, trade["id"], _old_trail, _trail_prod, _trail_stock)
 
                 update_trade(trade["id"], trade_db_update)
                 n_updated += 1

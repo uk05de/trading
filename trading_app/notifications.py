@@ -233,13 +233,18 @@ def send_evening_summary():
         _trail_info = ""
         for t in trades:
             if (t.get("phase") or 1) == 2 and t.get("trail_sl"):
-                from ko_calc import product_to_stock
+                from ko_calc import product_to_stock, stock_to_product
                 _ko = t.get("ko_level") or 0
                 _bv = t.get("bv") or 1
-                _trail_stock = product_to_stock(t["trail_sl"], _ko, t["direction"], _bv)
-                _trail_info = f" | Trail-SL: {t['trail_sl']:.2f} Prod / {_trail_stock:.2f} Aktie"
+                _entry_prod = stock_to_product(t["entry_price"], _ko, t["direction"], _bv)
+                # Sanity: korrupter Trail-SL ignorieren
+                if t["trail_sl"] > _entry_prod * 100:
+                    _trail_info = " | Trail-SL: KORRUPT"
+                else:
+                    _trail_stock = product_to_stock(t["trail_sl"], _ko, t["direction"], _bv)
+                    _trail_info = f"\n   SL: {t['trail_sl']:.2f} Prod / {_trail_stock:.2f} Aktie"
 
-        line = f"  {name}{suffix}: {display_r:+.1f}R{_trail_info}"
+        line = f"• {name}{suffix}: {display_r:+.1f}R{_trail_info}"
 
         if worst_r <= -0.8:
             sl_lines.append(line)
@@ -249,21 +254,20 @@ def send_evening_summary():
             ok_lines.append(line)
 
     # Nachricht zusammenbauen
-    parts = [f"Abend-Zusammenfassung ({len(positions)} Positionen)"]
+    parts = [f"Abend-Zusammenfassung ({len(positions)} Positionen)\n"]
 
     if sl_lines:
-        parts.append("")
-        parts.append("Nahe/Unter SL:")
+        parts.append("⚠ Nahe/Unter SL:")
         parts.extend(sl_lines)
+        parts.append("")
 
     if target_lines:
-        parts.append("")
-        parts.append("Ueber Target:")
+        parts.append("🎯 Ueber Target:")
         parts.extend(target_lines)
+        parts.append("")
 
     if ok_lines:
-        parts.append("")
-        parts.append("Laufend:")
+        parts.append("📊 Laufend:")
         parts.extend(ok_lines)
 
     message = "\n".join(parts)
