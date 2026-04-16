@@ -241,8 +241,7 @@ def send_evening_summary():
                 if t["trail_sl"] > _entry_prod * 100:
                     _trail_info = " | Trail-SL: KORRUPT"
                 else:
-                    _trail_stock = product_to_stock(t["trail_sl"], _ko, t["direction"], _bv)
-                    _trail_info = f"\n   SL: {t['trail_sl']:.2f} Prod / {_trail_stock:.2f} Aktie"
+                    _trail_info = f" | SL: {t['trail_sl']:.2f} Prod"
 
         line = f"• {name}{suffix}: {display_r:+.1f}R{_trail_info}"
 
