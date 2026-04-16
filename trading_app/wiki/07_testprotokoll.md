@@ -591,7 +591,7 @@ Reports: results/2026-04-04_1129_trend_follow/, results/2026-04-04_1151_trend_fo
 
 ---
 
-## Aktueller bester Stand — Pattern-Signale (2026-04-04)
+## Aktueller bester Stand — Pattern-Signale (2026-04-16)
 
 | Parameter | Wert |
 |---|---|
@@ -601,14 +601,15 @@ Reports: results/2026-04-04_1129_trend_follow/, results/2026-04-04_1151_trend_fo
 | SL | Vom Pattern-Detektor, min 5% Distanz |
 | Sizing | Risk 2% freies Cash, max €2.500 Eigenkapital |
 | Ranking | persistence_score: combo_score + persistence × 0.2, Lookback 10 Tage |
+| Max Positionen | 7 (Backtester-Baseline), manuell entschieden |
 | Markt-Veto | Keins (Trader entscheidet manuell) |
-| Pos-Limit / Einzahlung | Manuell (nicht im System) |
+
+Backtester-Referenz (Trail 2×ATR, 7 Pos.): +514% Return, 24.2% DD, 21.2 Effizienz
 
 ---
 
 ## Offene Fragen
 
-- Trend-Following in App einbauen (Phase 2 Logik)
 - US-Titel mit eigenem Markt-Kontext testen
 - Blocking-Dauer ggf. verkuerzen
 - Paper-Trading starten (min. 3 Monate)
